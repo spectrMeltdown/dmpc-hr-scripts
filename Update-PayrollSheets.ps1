@@ -5,6 +5,8 @@ param(
 )
 
 $file_path = $null
+$folder_path = $null
+$recursive = $false
 $sheet_name = $null
 $sheet_range = @()
 $log_path = $null
@@ -52,6 +54,22 @@ function Import-DotEnv {
     return $env
 }
 
+function Resolve-ConfigPath {
+    param(
+        [string]$PathValue
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return $null
+    }
+
+    if ([System.IO.Path]::IsPathRooted($PathValue)) {
+        return $PathValue
+    }
+
+    return Join-Path $PSScriptRoot $PathValue
+}
+
 function Initialize-Config {
     param(
         [Parameter(Mandatory = $true)]
@@ -59,7 +77,7 @@ function Initialize-Config {
     )
 
     $env = Import-DotEnv -Path $Path
-    $requiredKeys = @('FILE_PATH', 'SHEET_NAME', 'SHEET_RANGE', 'LOG_PATH', 'TARGET_CELLS')
+    $requiredKeys = @('SHEET_NAME', 'SHEET_RANGE', 'LOG_PATH', 'TARGET_CELLS')
 
     foreach ($key in $requiredKeys) {
         if (-not $env.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($env[$key])) {
@@ -68,7 +86,25 @@ function Initialize-Config {
         }
     }
 
-    $script:file_path = $env['FILE_PATH']
+    $folderPathValue = if ($env.ContainsKey('FOLDER_PATH')) { $env['FOLDER_PATH'] } else { $null }
+    $filePathValue = if ($env.ContainsKey('FILE_PATH')) { $env['FILE_PATH'] } else { $null }
+
+    $script:folder_path = Resolve-ConfigPath -PathValue $folderPathValue
+    $script:file_path = Resolve-ConfigPath -PathValue $filePathValue
+
+    if ([string]::IsNullOrWhiteSpace($script:folder_path) -and [string]::IsNullOrWhiteSpace($script:file_path)) {
+        Write-Error "At least one of FOLDER_PATH or FILE_PATH must be set"
+        exit 1
+    }
+
+    $recursiveValue = if ($env.ContainsKey('RECURSIVE')) { $env['RECURSIVE'] } else { $null }
+    if ([string]::IsNullOrWhiteSpace($recursiveValue)) {
+        $script:recursive = $false
+    }
+    else {
+        $script:recursive = $recursiveValue.Trim().ToLowerInvariant() -in @('true', '1', 'yes')
+    }
+
     $script:sheet_name = $env['SHEET_NAME']
 
     $rangeParts = ($env['SHEET_RANGE'] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -85,13 +121,7 @@ function Initialize-Config {
         exit 1
     }
 
-    $logPathValue = $env['LOG_PATH']
-    if ([System.IO.Path]::IsPathRooted($logPathValue)) {
-        $script:log_path = $logPathValue
-    }
-    else {
-        $script:log_path = Join-Path $PSScriptRoot $logPathValue
-    }
+    $script:log_path = Resolve-ConfigPath -PathValue $env['LOG_PATH']
 
     $script:TargetCells = ($env['TARGET_CELLS'] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     if ($script:TargetCells.Count -eq 0) {
@@ -207,18 +237,52 @@ function Get-WorksheetByName {
     return $null
 }
 
-function Invoke-PayrollSheetUpdate {
-    Write-Log "Starting payroll sheet update"
-    Write-Log "file_path=$file_path sheet_name=$sheet_name sheet_range=[$($sheet_range[0]), $($sheet_range[1])]"
+function Get-PayrollWorkbookPaths {
+    if (-not [string]::IsNullOrWhiteSpace($folder_path)) {
+        if (-not (Test-Path -LiteralPath $folder_path -PathType Container)) {
+            throw "Folder not found: $folder_path"
+        }
 
-    if (-not (Test-Path -LiteralPath $file_path)) {
-        Write-Log "File not found: $file_path" -Level ERROR
-        exit 1
+        $childParams = @{
+            LiteralPath = $folder_path
+            Filter      = '*.xlsx'
+            File        = $true
+        }
+        if ($recursive) {
+            $childParams['Recurse'] = $true
+        }
+
+        $paths = @(Get-ChildItem @childParams |
+            Where-Object { -not $_.Name.StartsWith('~$') } |
+            ForEach-Object { $_.FullName } |
+            Sort-Object)
+
+        if ($paths.Count -eq 0) {
+            throw "No .xlsx files found in folder: $folder_path"
+        }
+
+        return $paths
     }
+
+    if (-not (Test-Path -LiteralPath $file_path -PathType Leaf)) {
+        throw "File not found: $file_path"
+    }
+
+    return @($file_path)
+}
+
+function Invoke-PayrollSheetUpdate {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WorkbookPath
+    )
+
+    Write-Log "Starting payroll sheet update"
+    Write-Log "workbook_path=$WorkbookPath sheet_name=$sheet_name sheet_range=[$($sheet_range[0]), $($sheet_range[1])]"
 
     if ($sheet_range.Count -lt 2) {
         Write-Log "sheet_range must contain start and stop values, e.g. @(3, 5)" -Level ERROR
-        exit 1
+        throw "sheet_range must contain start and stop values"
     }
 
     $rangeStart = [int]$sheet_range[0]
@@ -226,7 +290,7 @@ function Invoke-PayrollSheetUpdate {
 
     if ($rangeStart -gt $rangeStop) {
         Write-Log "sheet_range start ($rangeStart) must be <= stop ($rangeStop)" -Level ERROR
-        exit 1
+        throw "sheet_range start ($rangeStart) must be <= stop ($rangeStop)"
     }
 
     $templateName = [string]$sheet_name
@@ -238,12 +302,12 @@ function Invoke-PayrollSheetUpdate {
         $excel.Visible = $false
         $excel.DisplayAlerts = $false
 
-        $workbook = $excel.Workbooks.Open($file_path)
+        $workbook = $excel.Workbooks.Open($WorkbookPath)
         $templateSheet = Get-WorksheetByName -Workbook $workbook -Name $templateName
 
         if (-not $templateSheet) {
             Write-Log "Template sheet '$templateName' not found in workbook" -Level ERROR
-            exit 1
+            throw "Template sheet '$templateName' not found in workbook"
         }
 
         for ($n = $rangeStart; $n -le $rangeStop; $n++) {
@@ -273,11 +337,11 @@ function Invoke-PayrollSheetUpdate {
 
         $workbook.Save()
         Write-Log "Workbook saved successfully"
-        Write-Log "Payroll sheet update completed"
+        Write-Log "Payroll sheet update completed for $WorkbookPath"
     }
     catch {
         Write-Log "Unexpected error: $($_.Exception.Message)" -Level ERROR
-        exit 1
+        throw
     }
     finally {
         if ($workbook) {
@@ -296,4 +360,35 @@ function Invoke-PayrollSheetUpdate {
 }
 
 Initialize-Config -Path $EnvPath
-Invoke-PayrollSheetUpdate
+
+try {
+    $workbookPaths = Get-PayrollWorkbookPaths
+}
+catch {
+    Write-Error $_.Exception.Message
+    exit 1
+}
+
+Write-Log "Processing $($workbookPaths.Count) workbook(s)"
+if (-not [string]::IsNullOrWhiteSpace($folder_path)) {
+    Write-Log "folder_path=$folder_path recursive=$recursive"
+}
+
+$failures = @()
+foreach ($path in $workbookPaths) {
+    Write-Log "Processing workbook: $path"
+    try {
+        Invoke-PayrollSheetUpdate -WorkbookPath $path
+    }
+    catch {
+        Write-Log "Failed workbook ${path}: $($_.Exception.Message)" -Level ERROR
+        $failures += $path
+    }
+}
+
+if ($failures.Count -gt 0) {
+    Write-Log "Completed with $($failures.Count) failure(s)" -Level ERROR
+    exit 1
+}
+
+Write-Log "All workbook updates completed successfully"
