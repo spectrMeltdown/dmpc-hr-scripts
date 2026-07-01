@@ -14,7 +14,7 @@ $TargetCellGroups = @()
 $onlyNumSheets = $false
 $dryRun = $false
 
-$BracketedFileRefPattern = "'[^']*\[[^\]]+\][^']+'!"
+$SheetRefPrefixPattern = "'[^']+'!"
 
 function Import-DotEnv {
     param(
@@ -258,7 +258,7 @@ function Get-TargetWorksheets {
     return $sheets
 }
 
-function Fix-BracketedFileReferences {
+function Set-FormulaSheetReference {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Formula,
@@ -267,14 +267,14 @@ function Fix-BracketedFileReferences {
         [string]$RefSheetName
     )
 
-    if ($Formula -notmatch $BracketedFileRefPattern) {
+    if ($Formula -notmatch $SheetRefPrefixPattern) {
         return $Formula
     }
 
     $escapedName = $RefSheetName -replace "'", "''"
     $replacement = "'$escapedName'!"
 
-    return [regex]::Replace($Formula, $BracketedFileRefPattern, $replacement)
+    return [regex]::Replace($Formula, $SheetRefPrefixPattern, $replacement)
 }
 
 function Update-TargetCellFormulas {
@@ -305,10 +305,16 @@ function Update-TargetCellFormulas {
             continue
         }
 
-        $newFormula = Fix-BracketedFileReferences -Formula $formula -RefSheetName $RefSheetName
+        if ($formula -notmatch $SheetRefPrefixPattern) {
+            Write-Log "Sheet $SheetLabel cell ${address}: no sheet reference in formula, skipped" -Level WARN
+            $skipped++
+            continue
+        }
+
+        $newFormula = Set-FormulaSheetReference -Formula $formula -RefSheetName $RefSheetName
 
         if ($newFormula -eq $formula) {
-            Write-Log "Sheet $SheetLabel cell ${address}: no bracketed file reference, skipped" -Level WARN
+            Write-Log "Sheet $SheetLabel cell ${address}: already correct, skipped"
             $skipped++
             continue
         }
