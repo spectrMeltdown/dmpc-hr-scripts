@@ -15,7 +15,7 @@ $sheetRefIndex = 1
 $onlyNumSheets = $false
 $dryRun = $false
 
-$BracketedFileRefPattern = "'=\[[^\]]+\][^']+'!"
+$BracketedFileRefPattern = "'[^']*\[[^\]]+\][^']+'!"
 
 function Import-DotEnv {
     param(
@@ -212,6 +212,10 @@ function Get-TargetWorksheets {
 
     $sheets = @()
     foreach ($sheet in @($Workbook.Worksheets)) {
+        if ($sheet.Visible -ne -1) {
+            continue
+        }
+
         if (-not $onlyNumSheets -or (Test-IntegerSheetName -Name $sheet.Name)) {
             $sheets += $sheet
         }
@@ -234,7 +238,7 @@ function Fix-BracketedFileReferences {
     }
 
     $escapedName = $RefSheetName -replace "'", "''"
-    $replacement = "='$escapedName'!"
+    $replacement = "'$escapedName'!"
 
     return [regex]::Replace($Formula, $BracketedFileRefPattern, $replacement)
 }
