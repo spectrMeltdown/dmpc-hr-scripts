@@ -70,6 +70,41 @@ function Resolve-ConfigPath {
     return Join-Path $PSScriptRoot $PathValue
 }
 
+function Import-TargetCellGroups {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Env
+    )
+
+    $groups = @()
+    $n = 1
+
+    while ($Env.ContainsKey("TARGET_CELLS_$n")) {
+        $cellsKey = "TARGET_CELLS_$n"
+        $cellsValue = $Env[$cellsKey]
+        if ([string]::IsNullOrWhiteSpace($cellsValue)) {
+            Write-Error "Missing or empty required env key: $cellsKey"
+            exit 1
+        }
+
+        $cells = ($cellsValue -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        if ($cells.Count -eq 0) {
+            Write-Error "$cellsKey must contain at least one cell address"
+            exit 1
+        }
+
+        $groups += @{ Cells = $cells }
+        $n++
+    }
+
+    if ($groups.Count -eq 0) {
+        Write-Error "At least one TARGET_CELLS_N group required"
+        exit 1
+    }
+
+    return $groups
+}
+
 function Initialize-Config {
     param(
         [Parameter(Mandatory = $true)]
@@ -77,7 +112,7 @@ function Initialize-Config {
     )
 
     $env = Import-DotEnv -Path $Path
-    $requiredKeys = @('SHEET_NAME', 'SHEET_RANGE', 'LOG_PATH', 'TARGET_CELLS')
+    $requiredKeys = @('SHEET_NAME', 'SHEET_RANGE', 'LOG_PATH')
 
     foreach ($key in $requiredKeys) {
         if (-not $env.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($env[$key])) {
@@ -123,9 +158,10 @@ function Initialize-Config {
 
     $script:log_path = Resolve-ConfigPath -PathValue $env['LOG_PATH']
 
-    $script:TargetCells = ($env['TARGET_CELLS'] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    $cellGroups = Import-TargetCellGroups -Env $env
+    $script:TargetCells = @($cellGroups | ForEach-Object { $_.Cells })
     if ($script:TargetCells.Count -eq 0) {
-        Write-Error "TARGET_CELLS must contain at least one cell address"
+        Write-Error "At least one TARGET_CELLS_N group must contain a cell address"
         exit 1
     }
 }

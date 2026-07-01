@@ -10,8 +10,7 @@ $file_path = $null
 $folder_path = $null
 $recursive = $false
 $log_path = $null
-$TargetCells = @()
-$sheetRefIndex = 1
+$TargetCellGroups = @()
 $onlyNumSheets = $false
 $dryRun = $false
 
@@ -86,6 +85,59 @@ function Test-EnvBool {
     return $Value.Trim().ToLowerInvariant() -in @('true', '1', 'yes')
 }
 
+function Import-TargetCellGroups {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Env
+    )
+
+    $groups = @()
+    $n = 1
+
+    while ($Env.ContainsKey("TARGET_CELLS_$n")) {
+        $cellsKey = "TARGET_CELLS_$n"
+        $cellsValue = $Env[$cellsKey]
+        if ([string]::IsNullOrWhiteSpace($cellsValue)) {
+            Write-Error "Missing or empty required env key: $cellsKey"
+            exit 1
+        }
+
+        $cells = ($cellsValue -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        if ($cells.Count -eq 0) {
+            Write-Error "$cellsKey must contain at least one cell address"
+            exit 1
+        }
+
+        $refKey = "SHEET_REF_INDEX_$n"
+        $refIndexValue = if ($Env.ContainsKey($refKey)) { $Env[$refKey] } else { '1' }
+        try {
+            $refIndex = [int]$refIndexValue
+        }
+        catch {
+            Write-Error "$refKey must be an integer: $refIndexValue"
+            exit 1
+        }
+
+        if ($refIndex -lt 1) {
+            Write-Error "$refKey must be >= 1"
+            exit 1
+        }
+
+        $groups += @{
+            Cells    = $cells
+            RefIndex = $refIndex
+        }
+        $n++
+    }
+
+    if ($groups.Count -eq 0) {
+        Write-Error "At least one TARGET_CELLS_N group required"
+        exit 1
+    }
+
+    return $groups
+}
+
 function Initialize-Config {
     param(
         [Parameter(Mandatory = $true)]
@@ -95,7 +147,7 @@ function Initialize-Config {
     )
 
     $env = Import-DotEnv -Path $Path
-    $requiredKeys = @('LOG_PATH', 'TARGET_CELLS')
+    $requiredKeys = @('LOG_PATH')
 
     foreach ($key in $requiredKeys) {
         if (-not $env.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($env[$key])) {
@@ -103,6 +155,8 @@ function Initialize-Config {
             exit 1
         }
     }
+
+    $script:TargetCellGroups = Import-TargetCellGroups -Env $env
 
     $folderPathValue = if ($env.ContainsKey('FOLDER_PATH')) { $env['FOLDER_PATH'] } else { $null }
     $filePathValue = if ($env.ContainsKey('FILE_PATH')) { $env['FILE_PATH'] } else { $null }
@@ -118,20 +172,6 @@ function Initialize-Config {
     $recursiveValue = if ($env.ContainsKey('RECURSIVE')) { $env['RECURSIVE'] } else { $null }
     $script:recursive = Test-EnvBool -Value $recursiveValue
 
-    $refIndexValue = if ($env.ContainsKey('SHEET_REF_INDEX')) { $env['SHEET_REF_INDEX'] } else { '1' }
-    try {
-        $script:sheetRefIndex = [int]$refIndexValue
-    }
-    catch {
-        Write-Error "SHEET_REF_INDEX must be an integer: $refIndexValue"
-        exit 1
-    }
-
-    if ($script:sheetRefIndex -lt 1) {
-        Write-Error "SHEET_REF_INDEX must be >= 1"
-        exit 1
-    }
-
     $onlyNumSheetsValue = if ($env.ContainsKey('ONLY_NUM_SHEETS')) { $env['ONLY_NUM_SHEETS'] } else { $null }
     $script:onlyNumSheets = Test-EnvBool -Value $onlyNumSheetsValue
 
@@ -142,12 +182,6 @@ function Initialize-Config {
     }
 
     $script:log_path = Resolve-ConfigPath -PathValue $env['LOG_PATH']
-
-    $script:TargetCells = ($env['TARGET_CELLS'] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-    if ($script:TargetCells.Count -eq 0) {
-        Write-Error "TARGET_CELLS must contain at least one cell address"
-        exit 1
-    }
 }
 
 function Write-Log {
@@ -249,6 +283,9 @@ function Update-TargetCellFormulas {
         $Worksheet,
 
         [Parameter(Mandatory = $true)]
+        [string[]]$TargetCells,
+
+        [Parameter(Mandatory = $true)]
         [string]$RefSheetName,
 
         [Parameter(Mandatory = $true)]
@@ -334,7 +371,8 @@ function Invoke-FixCopiedPayrollSheet {
     )
 
     Write-Log "Starting fix copied payroll sheet references"
-    Write-Log "workbook_path=$WorkbookPath sheet_ref_index=$sheetRefIndex only_num_sheets=$onlyNumSheets dry_run=$dryRun"
+    $refIndexes = ($TargetCellGroups | ForEach-Object { $_.RefIndex }) -join ','
+    Write-Log "workbook_path=$WorkbookPath groups=$($TargetCellGroups.Count) ref_indexes=$refIndexes only_num_sheets=$onlyNumSheets dry_run=$dryRun"
 
     $excel = $null
     $workbook = $null
@@ -345,8 +383,7 @@ function Invoke-FixCopiedPayrollSheet {
         $excel.DisplayAlerts = $false
 
         $workbook = $excel.Workbooks.Open($WorkbookPath)
-        $refSheetName = Get-RefSheetName -Workbook $workbook -Index $sheetRefIndex
-        Write-Log "Reference sheet index $sheetRefIndex name='$refSheetName'"
+        $refSheetNames = @{}
 
         $targetSheets = Get-TargetWorksheets -Workbook $workbook
         if ($targetSheets.Count -eq 0) {
@@ -359,10 +396,28 @@ function Invoke-FixCopiedPayrollSheet {
         foreach ($sheet in $targetSheets) {
             $sheetLabel = $sheet.Name
             Write-Log "Processing sheet '$sheetLabel'"
-            $result = Update-TargetCellFormulas -Worksheet $sheet -RefSheetName $refSheetName -SheetLabel $sheetLabel
-            $totalUpdated += $result.Updated
-            $totalSkipped += $result.Skipped
-            Write-Log "Sheet '$sheetLabel': $($result.Updated) updated, $($result.Skipped) skipped"
+            $sheetUpdated = 0
+            $sheetSkipped = 0
+
+            foreach ($group in $TargetCellGroups) {
+                $refIndex = $group.RefIndex
+                if (-not $refSheetNames.ContainsKey($refIndex)) {
+                    $refSheetNames[$refIndex] = Get-RefSheetName -Workbook $workbook -Index $refIndex
+                    Write-Log "Reference sheet index $refIndex name='$($refSheetNames[$refIndex])'"
+                }
+
+                $result = Update-TargetCellFormulas `
+                    -Worksheet $sheet `
+                    -TargetCells $group.Cells `
+                    -RefSheetName $refSheetNames[$refIndex] `
+                    -SheetLabel $sheetLabel
+                $sheetUpdated += $result.Updated
+                $sheetSkipped += $result.Skipped
+            }
+
+            $totalUpdated += $sheetUpdated
+            $totalSkipped += $sheetSkipped
+            Write-Log "Sheet '$sheetLabel': $sheetUpdated updated, $sheetSkipped skipped"
         }
 
         if ($dryRun) {
