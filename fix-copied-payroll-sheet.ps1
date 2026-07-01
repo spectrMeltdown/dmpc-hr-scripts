@@ -14,7 +14,8 @@ $TargetCellGroups = @()
 $onlyNumSheets = $false
 $dryRun = $false
 
-$SheetRefPrefixPattern = "'[^']+'!"
+# Excel quoted sheet names escape apostrophes as '' inside the quotes
+$SheetRefPrefixPattern = "'(?:''|[^'])*'!"
 
 function Import-DotEnv {
     param(
