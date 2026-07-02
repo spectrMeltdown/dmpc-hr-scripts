@@ -362,7 +362,10 @@ function Invoke-PayrollSheetUpdate {
                 }
 
                 $insertAfterSheet.Copy([Type]::Missing, $insertAfterSheet)
-                $newSheet = $insertAfterSheet.Next
+                $newSheet = $excel.ActiveSheet
+                if (-not $newSheet) {
+                    throw "Failed to resolve newly copied sheet after '$($insertAfterSheet.Name)'"
+                }
                 $newSheet.Name = $targetName
 
                 $offset = $n - [int]$sheet_name
