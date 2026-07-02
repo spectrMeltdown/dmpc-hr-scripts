@@ -368,9 +368,17 @@ function Invoke-PayrollSheetUpdate {
                 }
                 $newSheet.Name = $targetName
 
-                $offset = $n - [int]$sheet_name
+                if ($predecessorSheet) {
+                    $offset = 1
+                    $copySource = $predecessorSheet.Name
+                }
+                else {
+                    $offset = $n - [int]$sheet_name
+                    $copySource = $templateName
+                }
+
                 $result = Update-TargetCellFormulas -Worksheet $newSheet -Increment $offset -SheetLabel $targetName
-                Write-Log "Created sheet $targetName from template $templateName (+$offset row offset on $($result.Updated) cells, $($result.Skipped) skipped)"
+                Write-Log "Created sheet $targetName from sheet $copySource (+$offset row offset on $($result.Updated) cells, $($result.Skipped) skipped)"
             }
         }
 
