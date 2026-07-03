@@ -273,6 +273,108 @@ function Get-WorksheetByName {
     return $null
 }
 
+function Test-IsVoucherSheetInBlock {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Workbook,
+
+        [Parameter(Mandatory = $true)]
+        $Sheet,
+
+        [Parameter(Mandatory = $true)]
+        $TemplateSheet,
+
+        [Parameter(Mandatory = $true)]
+        [int]$SheetNum
+    )
+
+    $templateNum = [int]$TemplateSheet.Name
+    if ($SheetNum -le $templateNum) {
+        return $false
+    }
+
+    $current = $Sheet
+    for ($i = $SheetNum; $i -gt $templateNum; $i--) {
+        if ($i -eq ($templateNum + 1)) {
+            return $current.Index -eq ($TemplateSheet.Index + 1)
+        }
+
+        $predecessor = Get-WorksheetByName -Workbook $Workbook -Name ([string]($i - 1))
+        if (-not $predecessor) {
+            return $false
+        }
+
+        if ($current.Index -ne ($predecessor.Index + 1)) {
+            return $false
+        }
+
+        $current = $predecessor
+    }
+
+    return $true
+}
+
+function Rename-LegacySheet {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Workbook,
+
+        [Parameter(Mandatory = $true)]
+        $Sheet,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TargetName
+    )
+
+    $legacyName = "$TargetName (legacy)"
+    $suffix = 2
+    while (Get-WorksheetByName -Workbook $Workbook -Name $legacyName) {
+        $legacyName = "$TargetName (legacy $suffix)"
+        $suffix++
+    }
+
+    Write-Log "Renaming legacy sheet '$TargetName' to '$legacyName' (not in voucher block)" -Level WARN
+    $Sheet.Name = $legacyName
+}
+
+function Set-TargetCellFormulasFromTemplate {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Worksheet,
+
+        [Parameter(Mandatory = $true)]
+        $TemplateWorksheet,
+
+        [Parameter(Mandatory = $true)]
+        [int]$CumulativeOffset,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SheetLabel
+    )
+
+    $updated = 0
+    $skipped = 0
+
+    foreach ($address in $TargetCells) {
+        $templateFormula = $TemplateWorksheet.Range($address).Formula
+
+        if (-not $templateFormula -or $templateFormula -notlike '=*') {
+            Write-Log "Sheet $SheetLabel cell ${address}: template not a formula, skipped" -Level WARN
+            $skipped++
+            continue
+        }
+
+        $newFormula = Increment-ExternalRefRows -Formula $templateFormula -Increment $CumulativeOffset
+        $Worksheet.Range($address).Formula = $newFormula
+        $updated++
+    }
+
+    return @{
+        Updated = $updated
+        Skipped = $skipped
+    }
+}
+
 function Get-PayrollWorkbookPaths {
     if (-not [string]::IsNullOrWhiteSpace($folder_path)) {
         if (-not (Test-Path -LiteralPath $folder_path -PathType Container)) {
@@ -346,9 +448,16 @@ function Invoke-PayrollSheetUpdate {
             throw "Template sheet '$templateName' not found in workbook"
         }
 
+        $templateNum = [int]$sheet_name
+
         for ($n = $rangeStart; $n -le $rangeStop; $n++) {
             $targetName = [string]$n
             $existingSheet = Get-WorksheetByName -Workbook $workbook -Name $targetName
+
+            if ($existingSheet -and -not (Test-IsVoucherSheetInBlock -Workbook $workbook -Sheet $existingSheet -TemplateSheet $templateSheet -SheetNum $n)) {
+                Rename-LegacySheet -Workbook $workbook -Sheet $existingSheet -TargetName $targetName
+                $existingSheet = $null
+            }
 
             if ($existingSheet) {
                 $result = Update-TargetCellFormulas -Worksheet $existingSheet -Increment 1 -SheetLabel $targetName
@@ -361,24 +470,18 @@ function Invoke-PayrollSheetUpdate {
                     $insertAfterSheet = $predecessorSheet
                 }
 
+                $insertIndex = $insertAfterSheet.Index
                 $insertAfterSheet.Copy([Type]::Missing, $insertAfterSheet)
-                $newSheet = $excel.ActiveSheet
+                $newSheet = $workbook.Worksheets.Item($insertIndex + 1)
                 if (-not $newSheet) {
                     throw "Failed to resolve newly copied sheet after '$($insertAfterSheet.Name)'"
                 }
                 $newSheet.Name = $targetName
 
-                if ($predecessorSheet) {
-                    $offset = 1
-                    $copySource = $predecessorSheet.Name
-                }
-                else {
-                    $offset = $n - [int]$sheet_name
-                    $copySource = $templateName
-                }
-
-                $result = Update-TargetCellFormulas -Worksheet $newSheet -Increment $offset -SheetLabel $targetName
-                Write-Log "Created sheet $targetName from sheet $copySource (+$offset row offset on $($result.Updated) cells, $($result.Skipped) skipped)"
+                $cumulativeOffset = $n - $templateNum
+                $copySource = $insertAfterSheet.Name
+                $result = Set-TargetCellFormulasFromTemplate -Worksheet $newSheet -TemplateWorksheet $templateSheet -CumulativeOffset $cumulativeOffset -SheetLabel $targetName
+                Write-Log "Created sheet $targetName from sheet $copySource (+$cumulativeOffset row offset from template on $($result.Updated) cells, $($result.Skipped) skipped)"
             }
         }
 
