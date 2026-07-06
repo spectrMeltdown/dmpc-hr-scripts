@@ -10,16 +10,14 @@ $file_path = $null
 $folder_path = $null
 $recursive = $false
 $log_path = $null
-$TargetCellGroups = @()
+$TargetCells = @()
 $onlyNumSheets = $false
 $dryRun = $false
-$stripExternalPathOnly = $false
+$incrementMode = $true
+$columnDelta = 1
 
 # Excel quoted sheet names escape apostrophes as '' inside the quotes
-$SheetRefPrefixPattern = "'(?:''|[^'])*'!"
-
-# Matches Excel external workbook refs: ='\\UNC\path\ [file.xlsx]SheetName'!CellRef
-$ExternalWorkbookRefPattern = "^='\\(?:''|[^'])*\[[^\]]+\.xlsx\](?:''|[^']*)'!(.+)$"
+$ExternalRefPattern = "('(?:''|[^'])*'!)(\$?)([A-Z]{1,3})(\$?)(\d+)"
 
 function Import-DotEnv {
     param(
@@ -113,25 +111,7 @@ function Import-TargetCellGroups {
             exit 1
         }
 
-        $refKey = "SHEET_REF_INDEX_$n"
-        $refIndexValue = if ($Env.ContainsKey($refKey)) { $Env[$refKey] } else { '1' }
-        try {
-            $refIndex = [int]$refIndexValue
-        }
-        catch {
-            Write-Error "$refKey must be an integer: $refIndexValue"
-            exit 1
-        }
-
-        if ($refIndex -lt 1) {
-            Write-Error "$refKey must be >= 1"
-            exit 1
-        }
-
-        $groups += @{
-            Cells    = $cells
-            RefIndex = $refIndex
-        }
+        $groups += @{ Cells = $cells }
         $n++
     }
 
@@ -161,7 +141,16 @@ function Initialize-Config {
         }
     }
 
-    $script:TargetCellGroups = Import-TargetCellGroups -Env $env
+    $cellGroups = Import-TargetCellGroups -Env $env
+    $script:TargetCells = @()
+    foreach ($group in $cellGroups) {
+        $script:TargetCells += $group.Cells
+    }
+
+    if ($script:TargetCells.Count -eq 0) {
+        Write-Error "At least one TARGET_CELLS_N group must contain a cell address"
+        exit 1
+    }
 
     $folderPathValue = if ($env.ContainsKey('FOLDER_PATH')) { $env['FOLDER_PATH'] } else { $null }
     $filePathValue = if ($env.ContainsKey('FILE_PATH')) { $env['FILE_PATH'] } else { $null }
@@ -186,8 +175,9 @@ function Initialize-Config {
         $script:dryRun = $true
     }
 
-    $stripExternalPathOnlyValue = if ($env.ContainsKey('STRIP_EXTERNAL_PATH_ONLY')) { $env['STRIP_EXTERNAL_PATH_ONLY'] } else { $null }
-    $script:stripExternalPathOnly = Test-EnvBool -Value $stripExternalPathOnlyValue
+    $incrementModeValue = if ($env.ContainsKey('INCREMENT_MODE')) { $env['INCREMENT_MODE'] } else { 'true' }
+    $script:incrementMode = Test-EnvBool -Value $incrementModeValue -Default $true
+    $script:columnDelta = if ($script:incrementMode) { 1 } else { -1 }
 
     $script:log_path = Resolve-ConfigPath -PathValue $env['LOG_PATH']
 }
@@ -222,30 +212,6 @@ function Test-IntegerSheetName {
     return $Name -match '^\d+$'
 }
 
-function Get-RefSheetName {
-    param(
-        [Parameter(Mandatory = $true)]
-        $Workbook,
-
-        [Parameter(Mandatory = $true)]
-        [int]$Index
-    )
-
-    $visibleSheets = @()
-    foreach ($sheet in @($Workbook.Worksheets)) {
-        if ($sheet.Visible -eq -1) {
-            $visibleSheets += $sheet
-        }
-    }
-
-    $visibleCount = $visibleSheets.Count
-    if ($Index -lt 1 -or $Index -gt $visibleCount) {
-        throw "SHEET_REF_INDEX ($Index) is out of range; workbook has $visibleCount visible sheet(s)"
-    }
-
-    return [string]$visibleSheets[$Index - 1].Name
-}
-
 function Get-TargetWorksheets {
     param(
         [Parameter(Mandatory = $true)]
@@ -266,53 +232,84 @@ function Get-TargetWorksheets {
     return $sheets
 }
 
-function Set-FormulaSheetReference {
+function Convert-ColumnLettersToNumber {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Formula,
-
-        [Parameter(Mandatory = $true)]
-        [string]$RefSheetName
+        [string]$Letters
     )
 
-    if ($Formula -notmatch $SheetRefPrefixPattern) {
-        return $Formula
+    $num = 0
+    foreach ($char in $Letters.ToUpperInvariant().ToCharArray()) {
+        $num = $num * 26 + ([int][char]$char - [int][char]'A' + 1)
     }
 
-    $escapedName = $RefSheetName -replace "'", "''"
-    $replacement = "'$escapedName'!"
-
-    return [regex]::Replace($Formula, $SheetRefPrefixPattern, $replacement)
+    return $num
 }
 
-function Convert-ExternalWorkbookRef {
+function Convert-NumberToColumnLetters {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Number
+    )
+
+    if ($Number -lt 1) {
+        return $null
+    }
+
+    $result = ''
+    $n = $Number
+
+    while ($n -gt 0) {
+        $remainder = ($n - 1) % 26
+        $result = [char]([int][char]'A' + $remainder) + $result
+        $n = [math]::Floor(($n - 1) / 26)
+    }
+
+    return $result
+}
+
+function Shift-ExternalRefColumns {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Formula,
 
         [Parameter(Mandatory = $true)]
-        [string]$RefSheetName
+        [int]$Delta
     )
 
-    if ($Formula -notmatch $ExternalWorkbookRefPattern) {
+    if ($Delta -eq 0) {
         return $Formula
     }
 
-    $cellSuffix = $Matches[1]
-    $escapedName = $RefSheetName -replace "'", "''"
-    return "='$escapedName'!$cellSuffix"
+    if ($Formula -notmatch $ExternalRefPattern) {
+        return $Formula
+    }
+
+    return [regex]::Replace($Formula, $ExternalRefPattern, {
+        param($match)
+
+        $prefix = $match.Groups[1].Value
+        $colDollar = $match.Groups[2].Value
+        $column = $match.Groups[3].Value
+        $rowDollar = $match.Groups[4].Value
+        $row = $match.Groups[5].Value
+
+        $colNum = Convert-ColumnLettersToNumber -Letters $column
+        $newColNum = $colNum + $Delta
+
+        if ($newColNum -lt 1) {
+            return $match.Value
+        }
+
+        $newColumn = Convert-NumberToColumnLetters -Number $newColNum
+        return "$prefix$colDollar$newColumn$rowDollar$row"
+    })
 }
 
 function Update-TargetCellFormulas {
     param(
         [Parameter(Mandatory = $true)]
         $Worksheet,
-
-        [Parameter(Mandatory = $true)]
-        [string[]]$TargetCells,
-
-        [Parameter(Mandatory = $true)]
-        [string]$RefSheetName,
 
         [Parameter(Mandatory = $true)]
         [string]$SheetLabel
@@ -331,27 +328,16 @@ function Update-TargetCellFormulas {
             continue
         }
 
-        if ($stripExternalPathOnly) {
-            if ($formula -notmatch $ExternalWorkbookRefPattern) {
-                Write-Log "Sheet $SheetLabel cell ${address}: no UNC external workbook reference, skipped" -Level WARN
-                $skipped++
-                continue
-            }
-
-            $newFormula = Convert-ExternalWorkbookRef -Formula $formula -RefSheetName $RefSheetName
+        if ($formula -notmatch $ExternalRefPattern) {
+            Write-Log "Sheet $SheetLabel cell ${address}: no external sheet reference in formula, skipped" -Level WARN
+            $skipped++
+            continue
         }
-        else {
-            if ($formula -notmatch $SheetRefPrefixPattern) {
-                Write-Log "Sheet $SheetLabel cell ${address}: no sheet reference in formula, skipped" -Level WARN
-                $skipped++
-                continue
-            }
 
-            $newFormula = Set-FormulaSheetReference -Formula $formula -RefSheetName $RefSheetName
-        }
+        $newFormula = Shift-ExternalRefColumns -Formula $formula -Delta $columnDelta
 
         if ($newFormula -eq $formula) {
-            Write-Log "Sheet $SheetLabel cell ${address}: already correct, skipped"
+            Write-Log "Sheet $SheetLabel cell ${address}: column shift produced no change, skipped" -Level WARN
             $skipped++
             continue
         }
@@ -407,15 +393,14 @@ function Get-PayrollWorkbookPaths {
     return @($file_path)
 }
 
-function Invoke-FixCopiedPayrollSheet {
+function Invoke-ShiftPayrollRefColumn {
     param(
         [Parameter(Mandatory = $true)]
         [string]$WorkbookPath
     )
 
-    Write-Log "Starting fix copied payroll sheet references"
-    $refIndexes = ($TargetCellGroups | ForEach-Object { $_.RefIndex }) -join ','
-    Write-Log "workbook_path=$WorkbookPath groups=$($TargetCellGroups.Count) ref_indexes=$refIndexes only_num_sheets=$onlyNumSheets strip_external_path_only=$stripExternalPathOnly dry_run=$dryRun"
+    Write-Log "Starting shift payroll reference column letters"
+    Write-Log "workbook_path=$WorkbookPath target_cells=$($TargetCells.Count) increment_mode=$incrementMode column_delta=$columnDelta only_num_sheets=$onlyNumSheets dry_run=$dryRun"
 
     $excel = $null
     $workbook = $null
@@ -426,7 +411,6 @@ function Invoke-FixCopiedPayrollSheet {
         $excel.DisplayAlerts = $false
 
         $workbook = $excel.Workbooks.Open($WorkbookPath)
-        $refSheetNames = @{}
 
         $targetSheets = Get-TargetWorksheets -Workbook $workbook
         if ($targetSheets.Count -eq 0) {
@@ -439,28 +423,11 @@ function Invoke-FixCopiedPayrollSheet {
         foreach ($sheet in $targetSheets) {
             $sheetLabel = $sheet.Name
             Write-Log "Processing sheet '$sheetLabel'"
-            $sheetUpdated = 0
-            $sheetSkipped = 0
 
-            foreach ($group in $TargetCellGroups) {
-                $refIndex = $group.RefIndex
-                if (-not $refSheetNames.ContainsKey($refIndex)) {
-                    $refSheetNames[$refIndex] = Get-RefSheetName -Workbook $workbook -Index $refIndex
-                    Write-Log "Reference sheet index $refIndex name='$($refSheetNames[$refIndex])'"
-                }
-
-                $result = Update-TargetCellFormulas `
-                    -Worksheet $sheet `
-                    -TargetCells $group.Cells `
-                    -RefSheetName $refSheetNames[$refIndex] `
-                    -SheetLabel $sheetLabel
-                $sheetUpdated += $result.Updated
-                $sheetSkipped += $result.Skipped
-            }
-
-            $totalUpdated += $sheetUpdated
-            $totalSkipped += $sheetSkipped
-            Write-Log "Sheet '$sheetLabel': $sheetUpdated updated, $sheetSkipped skipped"
+            $result = Update-TargetCellFormulas -Worksheet $sheet -SheetLabel $sheetLabel
+            $totalUpdated += $result.Updated
+            $totalSkipped += $result.Skipped
+            Write-Log "Sheet '$sheetLabel': $($result.Updated) updated, $($result.Skipped) skipped"
         }
 
         if ($dryRun) {
@@ -471,7 +438,7 @@ function Invoke-FixCopiedPayrollSheet {
             Write-Log "Workbook saved successfully ($totalUpdated updated, $totalSkipped skipped)"
         }
 
-        Write-Log "Fix copied payroll sheet references completed for $WorkbookPath"
+        Write-Log "Shift payroll reference column letters completed for $WorkbookPath"
     }
     catch {
         Write-Log "Unexpected error: $($_.Exception.Message)" -Level ERROR
@@ -512,7 +479,7 @@ $failures = @()
 foreach ($path in $workbookPaths) {
     Write-Log "Processing workbook: $path"
     try {
-        Invoke-FixCopiedPayrollSheet -WorkbookPath $path
+        Invoke-ShiftPayrollRefColumn -WorkbookPath $path
     }
     catch {
         Write-Log "Failed workbook ${path}: $($_.Exception.Message)" -Level ERROR
@@ -525,4 +492,4 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Log "All workbook reference fixes completed successfully"
+Write-Log "All workbook column reference shifts completed successfully"
