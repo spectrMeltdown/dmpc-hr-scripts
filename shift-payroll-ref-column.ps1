@@ -17,7 +17,7 @@ $incrementMode = $true
 $columnDelta = 1
 
 # Excel quoted sheet names escape apostrophes as '' inside the quotes
-$ExternalRefPattern = "('(?:''|[^'])*'!)(\$?)([A-Z]{1,3})(\$?)(\d+)"
+$ExternalRefPattern = "('(?:''|[^'])*'!)(`$?)([A-Z]{1,3})(`$?)(\d+)"
 
 function Import-DotEnv {
     param(
