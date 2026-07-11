@@ -226,7 +226,21 @@ function Invoke-UnlockSheets {
         $excel.Visible = $false
         $excel.DisplayAlerts = $false
 
-        $workbook = $excel.Workbooks.Open($WorkbookPath)
+        # UpdateLinks=0, ReadOnly=$false, IgnoreReadOnlyRecommended=$true
+        $workbook = $excel.Workbooks.Open(
+            $WorkbookPath,
+            0,
+            $false,
+            [Type]::Missing,
+            [Type]::Missing,
+            [Type]::Missing,
+            $true
+        )
+
+        if ($workbook.ReadOnly) {
+            throw "Workbook opened as read-only; cannot unlock and save: $WorkbookPath"
+        }
+
         $unlocked = 0
         $skipped = 0
 
@@ -247,6 +261,12 @@ function Invoke-UnlockSheets {
             }
 
             $sheet.Unprotect($sheet_password) | Out-Null
+            if ($sheet.ProtectContents) {
+                $msg = "Sheet '$sheetName' still protected after Unprotect (wrong SHEET_PASSWORD?)"
+                Write-Log $msg -Level ERROR
+                throw $msg
+            }
+
             Write-Log "Sheet '$sheetName' unlocked"
             $unlocked++
         }
@@ -261,7 +281,7 @@ function Invoke-UnlockSheets {
     }
     finally {
         if ($workbook) {
-            $workbook.Close($true) | Out-Null
+            $workbook.Close($false) | Out-Null
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null
         }
 

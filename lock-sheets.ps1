@@ -226,7 +226,21 @@ function Invoke-LockSheets {
         $excel.Visible = $false
         $excel.DisplayAlerts = $false
 
-        $workbook = $excel.Workbooks.Open($WorkbookPath)
+        # UpdateLinks=0, ReadOnly=$false, IgnoreReadOnlyRecommended=$true
+        $workbook = $excel.Workbooks.Open(
+            $WorkbookPath,
+            0,
+            $false,
+            [Type]::Missing,
+            [Type]::Missing,
+            [Type]::Missing,
+            $true
+        )
+
+        if ($workbook.ReadOnly) {
+            throw "Workbook opened as read-only; cannot lock and save: $WorkbookPath"
+        }
+
         $locked = 0
         $skipped = 0
 
@@ -247,6 +261,12 @@ function Invoke-LockSheets {
             }
 
             $sheet.Protect($sheet_password) | Out-Null
+            if (-not $sheet.ProtectContents) {
+                $msg = "Sheet '$sheetName' still unprotected after Protect"
+                Write-Log $msg -Level ERROR
+                throw $msg
+            }
+
             Write-Log "Sheet '$sheetName' locked"
             $locked++
         }
@@ -261,7 +281,7 @@ function Invoke-LockSheets {
     }
     finally {
         if ($workbook) {
-            $workbook.Close($true) | Out-Null
+            $workbook.Close($false) | Out-Null
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null
         }
 
