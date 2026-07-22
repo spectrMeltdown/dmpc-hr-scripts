@@ -54,7 +54,10 @@ Optional:
 
 | Setting | What it means |
 |--------|----------------|
-| **BRANCH_PATHS** | Branch map: one `BRANCH_PATHS=Label=FolderPath` line per branch (preferred). You can also put several pairs on one line separated by `;`. |
+| **BRANCH_PATHS** | Branch map: one `BRANCH_PATHS=Label=FolderPath` line per branch (preferred). You can also put several pairs on one line separated by `;`. When **USE_BRANCH_YEAR_MONTH** is true, use the base folder (without year/month). |
+| **USE_BRANCH_YEAR_MONTH** | `true` to append **BRANCH_YEAR**\\**BRANCH_MONTH** under each branch path. `false` (default) uses paths as written. |
+| **BRANCH_YEAR** | Year folder segment (e.g. `2026`). Required when **USE_BRANCH_YEAR_MONTH** is true. |
+| **BRANCH_MONTH** | Month folder segment (e.g. `7. July`). Required when **USE_BRANCH_YEAR_MONTH** is true. |
 | **PAYROLL_TARGET_PERIOD** | `next` (default, upcoming Wed–Tue week) or `current` (period ending on/before today) |
 | **BRANCH_PAYROLL_START_DAY** | Period start weekday (default `Wednesday`) |
 | **BRANCH_PAYROLL_END_DAY** | Period end weekday (default `Tuesday`) |
@@ -63,12 +66,17 @@ Optional:
 
 Matching is by **day range only** in the filename (e.g. `8-14` or `08-14`). Month formatting can vary. Only top-level `.xlsx` / `.xls` files are checked (Excel lock files starting with `~$` are skipped).
 
-**Example — multi-line BRANCH_PATHS (easier to edit):**
+**Example — base paths + shared year/month:**
 
 ```env
-BRANCH_PATHS=Pandesalan=\\server\path\to\pandesalan
-BRANCH_PATHS=Mindoro=\\server\path\to\mindoro
+USE_BRANCH_YEAR_MONTH=true
+BRANCH_YEAR=2026
+BRANCH_MONTH=7. July
+BRANCH_PATHS=Aklan=\\server\AST-AKLAN Branch\Payroll\3. Sales Clerk Incentives
+BRANCH_PATHS=Balete=\\server\AST-BALETE-MIN Branch\Payroll\3. Sales Clerk Incentives
 ```
+
+Resolves to `...\3. Sales Clerk Incentives\2026\7. July` for each branch.
 
 ### Running tests
 

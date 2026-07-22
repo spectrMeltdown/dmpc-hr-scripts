@@ -11,6 +11,9 @@ $script:branch_payroll_end_day = 'Tuesday'
 $script:payroll_target_period = 'next'
 $script:ref_run_date = $null
 $script:branch_paths = @()
+$script:use_branch_year_month = $false
+$script:branch_year = $null
+$script:branch_month = $null
 
 function Import-DotEnv {
     param(
@@ -74,6 +77,59 @@ function Resolve-ConfigPath {
     }
 
     return Join-Path $PSScriptRoot $PathValue
+}
+
+function Test-EnvBool {
+    param(
+        [string]$Value,
+        [bool]$Default = $false
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $Default
+    }
+
+    return $Value.Trim().ToLowerInvariant() -in @('true', '1', 'yes')
+}
+
+function Assert-BranchYearMonthConfig {
+    param(
+        [bool]$UseBranchYearMonth,
+        [string]$BranchYear,
+        [string]$BranchMonth
+    )
+
+    if (-not $UseBranchYearMonth) {
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($BranchYear)) {
+        throw 'BRANCH_YEAR is required when USE_BRANCH_YEAR_MONTH is true'
+    }
+
+    if ([string]::IsNullOrWhiteSpace($BranchMonth)) {
+        throw 'BRANCH_MONTH is required when USE_BRANCH_YEAR_MONTH is true'
+    }
+}
+
+function Resolve-BranchFolderPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+
+        [bool]$UseBranchYearMonth = $false,
+
+        [string]$BranchYear,
+
+        [string]$BranchMonth
+    )
+
+    if (-not $UseBranchYearMonth) {
+        return $BasePath
+    }
+
+    Assert-BranchYearMonthConfig -UseBranchYearMonth $true -BranchYear $BranchYear -BranchMonth $BranchMonth
+    return (Join-Path (Join-Path $BasePath $BranchYear.Trim()) $BranchMonth.Trim())
 }
 
 function ConvertTo-DayOfWeekEnum {
@@ -419,6 +475,22 @@ function Initialize-Config {
         )
     }
 
+    $useYearMonthValue = if ($envMap.ContainsKey('USE_BRANCH_YEAR_MONTH')) { $envMap['USE_BRANCH_YEAR_MONTH'] } else { $null }
+    $script:use_branch_year_month = Test-EnvBool -Value $useYearMonthValue -Default $false
+    $script:branch_year = if ($envMap.ContainsKey('BRANCH_YEAR')) { $envMap['BRANCH_YEAR'] } else { $null }
+    $script:branch_month = if ($envMap.ContainsKey('BRANCH_MONTH')) { $envMap['BRANCH_MONTH'] } else { $null }
+
+    try {
+        Assert-BranchYearMonthConfig `
+            -UseBranchYearMonth $script:use_branch_year_month `
+            -BranchYear $script:branch_year `
+            -BranchMonth $script:branch_month
+    }
+    catch {
+        Write-Error $_.Exception.Message
+        exit 1
+    }
+
     try {
         $script:branch_paths = @(Parse-BranchPaths -Value $envMap['BRANCH_PATHS'])
     }
@@ -430,6 +502,21 @@ function Initialize-Config {
     if ($script:branch_paths.Count -eq 0) {
         Write-Error 'BRANCH_PATHS must contain at least one Label=Path entry'
         exit 1
+    }
+
+    if ($script:use_branch_year_month) {
+        $script:branch_paths = @(
+            foreach ($branch in $script:branch_paths) {
+                [pscustomobject]@{
+                    Label = $branch.Label
+                    Path  = Resolve-BranchFolderPath `
+                        -BasePath $branch.Path `
+                        -UseBranchYearMonth $true `
+                        -BranchYear $script:branch_year `
+                        -BranchMonth $script:branch_month
+                }
+            }
+        )
     }
 }
 

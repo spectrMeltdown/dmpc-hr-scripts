@@ -75,6 +75,36 @@ catch {
 }
 Assert-True $threw 'Expected Parse-BranchPaths to throw on invalid segment'
 
+# --- Branch year/month suffix ---
+
+$baseUnc = '\\172.10.0.11\AST-AKLAN Branch\Payroll\3. Sales Clerk Incentives'
+$offPath = Resolve-BranchFolderPath -BasePath $baseUnc -UseBranchYearMonth $false -BranchYear '2026' -BranchMonth '7. July'
+Assert-True ($offPath -eq $baseUnc) "Toggle off should leave path unchanged, got $offPath"
+
+$onPath = Resolve-BranchFolderPath -BasePath $baseUnc -UseBranchYearMonth $true -BranchYear '2026' -BranchMonth '7. July'
+$expectedOn = Join-Path (Join-Path $baseUnc '2026') '7. July'
+Assert-True ($onPath -eq $expectedOn) "Toggle on path mismatch: got $onPath, expected $expectedOn"
+
+$threwYear = $false
+try {
+    Assert-BranchYearMonthConfig -UseBranchYearMonth $true -BranchYear '' -BranchMonth '7. July'
+}
+catch {
+    $threwYear = $true
+}
+Assert-True $threwYear 'Expected Assert-BranchYearMonthConfig to throw when BRANCH_YEAR is empty'
+
+$threwMonth = $false
+try {
+    Assert-BranchYearMonthConfig -UseBranchYearMonth $true -BranchYear '2026' -BranchMonth ''
+}
+catch {
+    $threwMonth = $true
+}
+Assert-True $threwMonth 'Expected Assert-BranchYearMonthConfig to throw when BRANCH_MONTH is empty'
+
+Assert-BranchYearMonthConfig -UseBranchYearMonth $false -BranchYear '' -BranchMonth ''
+
 # Multi-line BRANCH_PATHS= lines are joined by Import-DotEnv
 $envFile = Join-Path ([IO.Path]::GetTempPath()) ("branch-paths-env-" + [guid]::NewGuid().ToString('N') + '.env')
 try {
