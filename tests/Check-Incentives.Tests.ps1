@@ -170,9 +170,9 @@ try {
     Assert-True ($results[2].HasFile -eq $false) 'Gone should be false'
 
     $checklist = Format-IncentivesChecklist -Results $results
-    Assert-True ($checklist -match [regex]::Escape('✓ Alpha')) 'Checklist should mark Alpha present'
-    Assert-True ($checklist -match [regex]::Escape('✗ Beta')) 'Checklist should mark Beta missing'
-    Assert-True ($checklist -match [regex]::Escape('✗ Gone')) 'Checklist should mark Gone missing'
+    Assert-True ($checklist -match [regex]::Escape('[OK] Alpha')) 'Checklist should mark Alpha present'
+    Assert-True ($checklist -match [regex]::Escape('[X] Beta')) 'Checklist should mark Beta missing'
+    Assert-True ($checklist -match [regex]::Escape('[X] Gone')) 'Checklist should mark Gone missing'
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

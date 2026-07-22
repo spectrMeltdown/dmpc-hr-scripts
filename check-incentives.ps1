@@ -357,10 +357,10 @@ function Format-IncentivesChecklist {
 
     $lines = foreach ($item in $Results) {
         if ($item.HasFile) {
-            "✓ $($item.Label)"
+            "[OK] $($item.Label)"
         }
         else {
-            "✗ $($item.Label)"
+            "[X] $($item.Label)"
         }
     }
 
@@ -558,7 +558,7 @@ function Invoke-CheckIncentives {
     }
 
     if (-not $SkipPopup) {
-        $title = 'Incentives check — {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd})' -f `
+        $title = 'Incentives check - {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd})' -f `
             $dayRangeLabel, $period.Start, $period.End
         Show-IncentivesPopup -Title $title -Body $checklist
     }
@@ -566,7 +566,8 @@ function Invoke-CheckIncentives {
     return $branches_with_incentives
 }
 
-$isDotSourced = $MyInvocation.InvocationName -eq '.' -or $MyInvocation.Line -match '^\s*\.'
+# True only when dot-sourced (`. .\script.ps1`). Do NOT match `.\script.ps1` via Line.
+$isDotSourced = $MyInvocation.InvocationName -eq '.'
 if (-not $isDotSourced) {
     Initialize-Config -Path $EnvPath
     [void](Invoke-CheckIncentives -SkipPopup:$NoPopup)
