@@ -379,6 +379,32 @@ function Show-IncentivesPopup {
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
     Add-Type -AssemblyName System.Drawing | Out-Null
 
+    $margin = 16
+    $formWidth = 420
+    $contentWidth = $formWidth - (2 * $margin)
+    $buttonHeight = 28
+    $buttonWidth = 86
+    $buttonGap = 12
+    $minContentHeight = 80
+
+    $font = New-Object System.Drawing.Font('Consolas', 11)
+    $measured = [System.Windows.Forms.TextRenderer]::MeasureText(
+        $Body,
+        $font,
+        (New-Object System.Drawing.Size($contentWidth, [int]::MaxValue)),
+        ([System.Windows.Forms.TextFormatFlags]::WordBreak -bor [System.Windows.Forms.TextFormatFlags]::TextBoxControl)
+    )
+    $desiredContentHeight = [Math]::Max($minContentHeight, $measured.Height + 8)
+
+    $workingArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $maxFormHeight = [Math]::Floor($workingArea.Height * 0.7)
+    $maxContentHeight = [Math]::Max(
+        $minContentHeight,
+        $maxFormHeight - (2 * $margin) - $buttonHeight - $buttonGap
+    )
+    $needsScroll = $desiredContentHeight -gt $maxContentHeight
+    $contentHeight = if ($needsScroll) { $maxContentHeight } else { $desiredContentHeight }
+
     $form = New-Object System.Windows.Forms.Form
     $form.Text = $Title
     $form.StartPosition = 'CenterScreen'
@@ -386,27 +412,45 @@ function Show-IncentivesPopup {
     $form.MaximizeBox = $false
     $form.MinimizeBox = $false
     $form.ShowInTaskbar = $true
-    $form.ClientSize = New-Object System.Drawing.Size(420, 320)
+    $form.ClientSize = New-Object System.Drawing.Size(
+        $formWidth,
+        ((2 * $margin) + $contentHeight + $buttonGap + $buttonHeight)
+    )
 
-    $label = New-Object System.Windows.Forms.Label
-    $label.AutoSize = $false
-    $label.Location = New-Object System.Drawing.Point(16, 16)
-    $label.Size = New-Object System.Drawing.Size(388, 240)
-    $label.Font = New-Object System.Drawing.Font('Consolas', 11)
-    $label.Text = $Body
+    $textBox = New-Object System.Windows.Forms.TextBox
+    $textBox.Multiline = $true
+    $textBox.ReadOnly = $true
+    $textBox.TabStop = $false
+    $textBox.BorderStyle = 'None'
+    $textBox.BackColor = $form.BackColor
+    $textBox.Location = New-Object System.Drawing.Point($margin, $margin)
+    $textBox.Size = New-Object System.Drawing.Size($contentWidth, $contentHeight)
+    $textBox.Font = $font
+    $textBox.Text = $Body
+    $textBox.ScrollBars = if ($needsScroll) {
+        [System.Windows.Forms.ScrollBars]::Vertical
+    }
+    else {
+        [System.Windows.Forms.ScrollBars]::None
+    }
+    $textBox.Select(0, 0)
 
     $okButton = New-Object System.Windows.Forms.Button
     $okButton.Text = 'OK'
     $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-    $okButton.Location = New-Object System.Drawing.Point(318, 270)
-    $okButton.Size = New-Object System.Drawing.Size(86, 28)
+    $okButton.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
+    $okButton.Location = New-Object System.Drawing.Point(
+        ($formWidth - $margin - $buttonWidth),
+        ($margin + $contentHeight + $buttonGap)
+    )
 
-    $form.Controls.Add($label)
+    $form.Controls.Add($textBox)
     $form.Controls.Add($okButton)
     $form.AcceptButton = $okButton
 
     [void]$form.ShowDialog()
     $form.Dispose()
+    $font.Dispose()
 }
 
 function Write-Log {
