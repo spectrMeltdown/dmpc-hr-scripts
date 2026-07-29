@@ -14,6 +14,7 @@ $script:branch_paths = @()
 $script:use_branch_year_month = $false
 $script:branch_year = $null
 $script:branch_month = $null
+$script:refresh_interval_seconds = 0
 
 function Import-DotEnv {
     param(
@@ -367,13 +368,39 @@ function Format-IncentivesChecklist {
     return ($lines -join [Environment]::NewLine)
 }
 
+function Test-IncentivesDisplayChanged {
+    param(
+        [hashtable]$Previous,
+        [hashtable]$Current
+    )
+
+    if (-not $Previous) {
+        return $false
+    }
+
+    return $Previous.Body -ne $Current.Body
+}
+
+function Invoke-IncentivesChangeAlert {
+    try {
+        Add-Type -AssemblyName System.Media -ErrorAction Stop
+        [System.Media.SystemSounds]::Exclamation.Play()
+    }
+    catch {
+        Write-Host "Could not play notification sound: $($_.Exception.Message)"
+    }
+}
+
 function Show-IncentivesPopup {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Title,
 
         [Parameter(Mandatory = $true)]
-        [string]$Body
+        [string]$Body,
+
+        [int]$RefreshIntervalSeconds = 0,
+        [scriptblock]$OnRefresh
     )
 
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
@@ -448,7 +475,42 @@ function Show-IncentivesPopup {
     $form.Controls.Add($okButton)
     $form.AcceptButton = $okButton
 
+    $timer = $null
+    if ($RefreshIntervalSeconds -gt 0 -and $OnRefresh) {
+        $refreshCallback = $OnRefresh
+        $previousDisplay = @{ Body = $Body }
+        $timer = New-Object System.Windows.Forms.Timer
+        $timer.Interval = $RefreshIntervalSeconds * 1000
+        $timer.Add_Tick({
+            try {
+                $display = & $refreshCallback
+                if ($display) {
+                    if (Test-IncentivesDisplayChanged -Previous $previousDisplay -Current $display) {
+                        Invoke-IncentivesChangeAlert
+                    }
+                    $previousDisplay = $display
+                    $textBox.Text = $display.Body
+                    $form.Text = if ($display.Title -match '\(updated ') {
+                        $display.Title
+                    }
+                    else {
+                        "$($display.Title) (updated $(Get-Date -Format 'HH:mm:ss'))"
+                    }
+                    $textBox.Select(0, 0)
+                }
+            }
+            catch {
+                Write-Host "Refresh failed: $($_.Exception.Message)"
+            }
+        })
+        $timer.Start()
+    }
+
     [void]$form.ShowDialog()
+    if ($timer) {
+        $timer.Stop()
+        $timer.Dispose()
+    }
     $form.Dispose()
     $font.Dispose()
 }
@@ -562,13 +624,19 @@ function Initialize-Config {
             }
         )
     }
+
+    $script:refresh_interval_seconds = 0
+    if ($envMap.ContainsKey('REFRESH_INTERVAL_SECONDS') -and -not [string]::IsNullOrWhiteSpace($envMap['REFRESH_INTERVAL_SECONDS'])) {
+        $parsedRefresh = 0
+        if (-not [int]::TryParse($envMap['REFRESH_INTERVAL_SECONDS'].Trim(), [ref]$parsedRefresh) -or $parsedRefresh -lt 0) {
+            Write-Error 'REFRESH_INTERVAL_SECONDS must be a non-negative integer'
+            exit 1
+        }
+        $script:refresh_interval_seconds = $parsedRefresh
+    }
 }
 
-function Invoke-CheckIncentives {
-    param(
-        [switch]$SkipPopup
-    )
-
+function Get-IncentivesCheckDisplay {
     $referenceDate = if ($script:ref_run_date) { $script:ref_run_date } else { [DateTime]::Today }
 
     $period = Get-BranchPayrollPeriod `
@@ -581,9 +649,6 @@ function Invoke-CheckIncentives {
     $endDay = $period.End.Day
     $dayRangeLabel = '{0}-{1}' -f $startDay, $endDay
 
-    Write-Log ("Payroll period ({0}): {1:yyyy-MM-dd} to {2:yyyy-MM-dd} (day range {3})" -f `
-            $script:payroll_target_period, $period.Start, $period.End, $dayRangeLabel)
-
     $branches_with_incentives = Get-BranchesWithIncentives `
         -BranchPaths $script:branch_paths `
         -StartDay $startDay `
@@ -594,25 +659,77 @@ function Invoke-CheckIncentives {
         }
 
     $checklist = Format-IncentivesChecklist -Results $branches_with_incentives
-    Write-Log "Incentives checklist:`n$checklist"
+    $title = 'Incentives check - {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd})' -f `
+        $dayRangeLabel, $period.Start, $period.End
 
-    foreach ($item in $branches_with_incentives) {
+    return @{
+        Title         = $title
+        Body          = $checklist
+        Results       = $branches_with_incentives
+        Period        = $period
+        DayRangeLabel = $dayRangeLabel
+    }
+}
+
+function Write-IncentivesCheckLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Display
+    )
+
+    Write-Log ("Payroll period ({0}): {1:yyyy-MM-dd} to {2:yyyy-MM-dd} (day range {3})" -f `
+            $script:payroll_target_period, $Display.Period.Start, $Display.Period.End, $Display.DayRangeLabel)
+    Write-Log "Incentives checklist:`n$($Display.Body)"
+
+    foreach ($item in $Display.Results) {
         $status = if ($item.HasFile) { 'found' } else { 'missing' }
         Write-Log ("{0}: {1} ({2})" -f $item.Label, $status, $item.Path)
     }
+}
+
+function Invoke-CheckIncentives {
+    param(
+        [switch]$SkipPopup
+    )
+
+    $display = Get-IncentivesCheckDisplay
+    Write-IncentivesCheckLog -Display $display
 
     if (-not $SkipPopup) {
-        $title = 'Incentives check - {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd})' -f `
-            $dayRangeLabel, $period.Start, $period.End
-        Show-IncentivesPopup -Title $title -Body $checklist
+        Show-IncentivesPopup -Title $display.Title -Body $display.Body
     }
 
-    return $branches_with_incentives
+    return $display.Results
 }
 
 # True only when dot-sourced (`. .\script.ps1`). Do NOT match `.\script.ps1` via Line.
 $isDotSourced = $MyInvocation.InvocationName -eq '.'
 if (-not $isDotSourced) {
     Initialize-Config -Path $EnvPath
-    [void](Invoke-CheckIncentives -SkipPopup:$NoPopup)
+
+    if ($script:refresh_interval_seconds -le 0) {
+        [void](Invoke-CheckIncentives -SkipPopup:$NoPopup)
+    }
+    elseif ($NoPopup) {
+        while ($true) {
+            Initialize-Config -Path $EnvPath
+            $display = Get-IncentivesCheckDisplay
+            Write-IncentivesCheckLog -Display $display
+            Start-Sleep -Seconds $script:refresh_interval_seconds
+        }
+    }
+    else {
+        $display = Get-IncentivesCheckDisplay
+        Write-IncentivesCheckLog -Display $display
+
+        $envPathForRefresh = $EnvPath
+        Show-IncentivesPopup -Title $display.Title -Body $display.Body `
+            -RefreshIntervalSeconds $script:refresh_interval_seconds `
+            -OnRefresh {
+                Initialize-Config -Path $envPathForRefresh
+                $refreshed = Get-IncentivesCheckDisplay
+                Write-IncentivesCheckLog -Display $refreshed
+                return $refreshed
+            }
+    }
 }
