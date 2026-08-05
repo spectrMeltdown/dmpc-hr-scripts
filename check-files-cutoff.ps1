@@ -510,12 +510,43 @@ function Invoke-CutoffFilesChangeAlert {
     }
 }
 
+function Open-CutoffFolderInExplorer {
+    param(
+        [string]$FolderPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FolderPath)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            'No folder path is configured for this branch.',
+            'Open folder',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $FolderPath)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Folder not found:`n$FolderPath",
+            'Open folder',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        return
+    }
+
+    Start-Process -FilePath 'explorer.exe' -ArgumentList @($FolderPath)
+}
+
 function Show-CutoffFilesPopup {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Title,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Results,
+
         [string]$Body,
 
         [int]$RefreshIntervalSeconds = 0,
@@ -525,22 +556,29 @@ function Show-CutoffFilesPopup {
     Add-Type -AssemblyName System.Windows.Forms | Out-Null
     Add-Type -AssemblyName System.Drawing | Out-Null
 
+    if ([string]::IsNullOrWhiteSpace($Body)) {
+        $Body = Format-CutoffFilesChecklist -Results $Results
+    }
+
     $margin = 16
-    $formWidth = 420
+    $formWidth = 520
     $contentWidth = $formWidth - (2 * $margin)
     $buttonHeight = 28
     $buttonWidth = 86
     $buttonGap = 12
+    $rowHeight = 30
+    $rowGap = 2
+    $openButtonWidth = 56
+    $openButtonHeight = 26
+    $openButtonGap = 8
     $minContentHeight = 80
 
     $font = New-Object System.Drawing.Font('Consolas', 11)
-    $measured = [System.Windows.Forms.TextRenderer]::MeasureText(
-        $Body,
-        $font,
-        (New-Object System.Drawing.Size($contentWidth, [int]::MaxValue)),
-        ([System.Windows.Forms.TextFormatFlags]::WordBreak -bor [System.Windows.Forms.TextFormatFlags]::TextBoxControl)
+    $rowCount = @($Results).Count
+    $desiredContentHeight = [Math]::Max(
+        $minContentHeight,
+        ($rowCount * ($rowHeight + $rowGap)) + 4
     )
-    $desiredContentHeight = [Math]::Max($minContentHeight, $measured.Height + 8)
 
     $workingArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $maxFormHeight = [Math]::Floor($workingArea.Height * 0.7)
@@ -563,23 +601,11 @@ function Show-CutoffFilesPopup {
         ((2 * $margin) + $contentHeight + $buttonGap + $buttonHeight)
     )
 
-    $textBox = New-Object System.Windows.Forms.TextBox
-    $textBox.Multiline = $true
-    $textBox.ReadOnly = $true
-    $textBox.TabStop = $false
-    $textBox.BorderStyle = 'None'
-    $textBox.BackColor = $form.BackColor
-    $textBox.Location = New-Object System.Drawing.Point($margin, $margin)
-    $textBox.Size = New-Object System.Drawing.Size($contentWidth, $contentHeight)
-    $textBox.Font = $font
-    $textBox.Text = $Body
-    $textBox.ScrollBars = if ($needsScroll) {
-        [System.Windows.Forms.ScrollBars]::Vertical
-    }
-    else {
-        [System.Windows.Forms.ScrollBars]::None
-    }
-    $textBox.Select(0, 0)
+    $listPanel = New-Object System.Windows.Forms.Panel
+    $listPanel.Location = New-Object System.Drawing.Point($margin, $margin)
+    $listPanel.Size = New-Object System.Drawing.Size($contentWidth, $contentHeight)
+    $listPanel.AutoScroll = $true
+    $listPanel.BorderStyle = 'None'
 
     $okButton = New-Object System.Windows.Forms.Button
     $okButton.Text = 'OK'
@@ -590,7 +616,64 @@ function Show-CutoffFilesPopup {
         ($margin + $contentHeight + $buttonGap)
     )
 
-    $form.Controls.Add($textBox)
+    $rebuildRows = {
+        param([object[]]$RowResults)
+
+        $listPanel.SuspendLayout()
+        $listPanel.Controls.Clear()
+
+        $scrollPad = 0
+        if ($needsScroll -or (@($RowResults).Count * ($rowHeight + $rowGap) -gt $contentHeight)) {
+            $scrollPad = [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth
+        }
+        $rowInnerWidth = [Math]::Max(120, $listPanel.ClientSize.Width - $scrollPad)
+        $labelWidth = [Math]::Max(
+            40,
+            $rowInnerWidth - $openButtonWidth - $openButtonGap
+        )
+        $labelHeight = [Math]::Max($font.Height + 2, 18)
+
+        $y = 0
+        foreach ($item in @($RowResults)) {
+            $status = if ($item.HasFile) { '[OK]' } else { '[X]' }
+            $rowPanel = New-Object System.Windows.Forms.Panel
+            $rowPanel.Location = New-Object System.Drawing.Point(0, $y)
+            $rowPanel.Size = New-Object System.Drawing.Size($rowInnerWidth, $rowHeight)
+
+            $statusLabel = New-Object System.Windows.Forms.Label
+            $statusLabel.Text = ("$status $($item.Label)" -replace '[\r\n]+', ' ')
+            $statusLabel.Font = $font
+            $statusLabel.AutoSize = $false
+            $statusLabel.AutoEllipsis = $true
+            $statusLabel.Location = New-Object System.Drawing.Point(0, [Math]::Floor(($rowHeight - $labelHeight) / 2))
+            $statusLabel.Size = New-Object System.Drawing.Size($labelWidth, $labelHeight)
+            $statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+
+            $openButton = New-Object System.Windows.Forms.Button
+            $openButton.Text = 'Open'
+            $openButton.Size = New-Object System.Drawing.Size($openButtonWidth, $openButtonHeight)
+            $openButton.Location = New-Object System.Drawing.Point(
+                ($rowInnerWidth - $openButtonWidth),
+                [Math]::Floor(($rowHeight - $openButtonHeight) / 2)
+            )
+            $openButton.Tag = $item.Path
+            $openButton.Add_Click({
+                param($sender, $eventArgs)
+                Open-CutoffFolderInExplorer -FolderPath ([string]$sender.Tag)
+            })
+
+            $rowPanel.Controls.Add($statusLabel)
+            $rowPanel.Controls.Add($openButton)
+            $listPanel.Controls.Add($rowPanel)
+            $y += ($rowHeight + $rowGap)
+        }
+
+        $listPanel.ResumeLayout()
+    }
+
+    & $rebuildRows $Results
+
+    $form.Controls.Add($listPanel)
     $form.Controls.Add($okButton)
     $form.AcceptButton = $okButton
 
@@ -608,14 +691,13 @@ function Show-CutoffFilesPopup {
                         Invoke-CutoffFilesChangeAlert
                     }
                     $previousDisplay = $display
-                    $textBox.Text = $display.Body
+                    & $rebuildRows -RowResults ([object[]]@($display.Results))
                     $form.Text = if ($display.Title -match '\(updated ') {
                         $display.Title
                     }
                     else {
                         "$($display.Title) (updated $(Get-Date -Format 'HH:mm:ss'))"
                     }
-                    $textBox.Select(0, 0)
                 }
             }
             catch {
@@ -848,7 +930,7 @@ function Invoke-CheckFilesCutoff {
     Write-CutoffFilesCheckLog -Display $display
 
     if (-not $SkipPopup) {
-        Show-CutoffFilesPopup -Title $display.Title -Body $display.Body
+        Show-CutoffFilesPopup -Title $display.Title -Results $display.Results -Body $display.Body
     }
 
     return $display.Results
@@ -875,7 +957,7 @@ if (-not $isDotSourced) {
         Write-CutoffFilesCheckLog -Display $display
 
         $envPathForRefresh = $EnvPath
-        Show-CutoffFilesPopup -Title $display.Title -Body $display.Body `
+        Show-CutoffFilesPopup -Title $display.Title -Results $display.Results -Body $display.Body `
             -RefreshIntervalSeconds $script:refresh_interval_seconds `
             -OnRefresh {
                 Initialize-Config -Path $envPathForRefresh
