@@ -1,6 +1,6 @@
 # Payroll Sheet Update Tool
 
-This folder contains PowerShell scripts that help with payroll Excel workbooks: creating/updating numbered sheets, fixing formula refs, locking sheets, and checking whether branch folders have incentives files for the current payroll week.
+This folder contains PowerShell scripts that help with payroll Excel workbooks: creating/updating numbered sheets, fixing formula refs, locking sheets, and checking whether branch folders have cutoff files for the current payroll week.
 
 You do **not** need to know programming. You only need to edit a small settings file and run a script.
 
@@ -14,7 +14,7 @@ You do **not** need to know programming. You only need to edit a small settings 
 | **fix-copied-payroll-sheet.ps1** | Fix formula sheet references after copying sheets |
 | **shift-payroll-ref-column.ps1** | Shift column letters in sheet formula refs |
 | **lock-sheets.ps1** / **unlock-sheets.ps1** | Protect or unprotect numbered sheets |
-| **check-incentives.ps1** | Check which branch folders have an incentives Excel file for the payroll week |
+| **check-files-cutoff.ps1** | Check which branch folders have a cutoff file for the payroll week |
 
 ---
 
@@ -32,25 +32,25 @@ New sheets are added in order from left to right (lowest number first, highest n
 
 ---
 
-## Check incentives (branch folders)
+## Check cutoff files (branch folders)
 
-**check-incentives.ps1** resolves the payroll week (Wed–Tue by default), looks in each branch folder listed in **BRANCH_PATHS**, and checks whether any Excel file name contains that week’s day range (for example `8-14` in `JULY 8-14, 2026`). It then shows a Windows popup with ✓ / ✗ per branch.
+**check-files-cutoff.ps1** resolves the payroll week / cutoff (Wed–Tue by default), looks in each branch folder listed in **BRANCH_PATHS**, and checks whether any Excel file name contains that week’s day range (for example `8-14` in `JULY 8-14, 2026`). It then shows a Windows popup with ✓ / ✗ per branch.
 
 ### How to run
 
 ```powershell
 cd "C:\Users\itope\OneDrive\Documents\dmpc-hr-scripts"
-.\check-incentives.ps1
+.\check-files-cutoff.ps1
 ```
 
 Optional:
 
 ```powershell
-.\check-incentives.ps1 -NoPopup          # log/console only, no dialog
-.\check-incentives.ps1 -EnvPath .\other.env
+.\check-files-cutoff.ps1 -NoPopup          # log/console only, no dialog
+.\check-files-cutoff.ps1 -EnvPath .\other.env
 ```
 
-### Settings (check-incentives)
+### Settings (check-files-cutoff)
 
 | Setting | What it means |
 |--------|----------------|
@@ -62,7 +62,7 @@ Optional:
 | **BRANCH_PAYROLL_START_DAY** | Period start weekday (default `Wednesday`) |
 | **BRANCH_PAYROLL_END_DAY** | Period end weekday (default `Tuesday`) |
 | **REF_RUN_DATE** | Optional fixed date `yyyy-MM-dd` used instead of today when calculating the period |
-| **LOG_PATH** | Log file path (e.g. `logs\check-incentives.log`) |
+| **LOG_PATH** | Log file path (e.g. `logs\check-files-cutoff.log`) |
 
 Matching is by **day range only** in the filename (e.g. `8-14` or `08-14`). Month formatting can vary. Only top-level `.xlsx` / `.xls` files are checked (Excel lock files starting with `~$` are skipped).
 
@@ -81,7 +81,7 @@ Resolves to `...\3. Sales Clerk Incentives\2026\7. July` for each branch.
 ### Running tests
 
 ```powershell
-.\tests\Check-Incentives.Tests.ps1
+.\tests\Check-Files-Cutoff.Tests.ps1
 ```
 
 ---
@@ -89,7 +89,7 @@ Resolves to `...\3. Sales Clerk Incentives\2026\7. July` for each branch.
 ## What you need
 
 - A **Windows** computer
-- **Microsoft Excel** installed (for the workbook update / lock scripts; not required for **check-incentives.ps1**)
+- **Microsoft Excel** installed (for the workbook update / lock scripts; not required for **check-files-cutoff.ps1**)
 - The files in this folder (the script and settings)
 
 **Important:** Close any Excel files you plan to update before running workbook scripts. The file must not be open in Excel.
@@ -212,7 +212,7 @@ Use **FOLDER_PATH** and set **RECURSIVE** to `true` only if you need files in su
 **Backup your files**  
 Before running on important payroll files, make a copy of the Excel file(s) or folder. The tool saves changes directly to the originals.
 
-**Incentives check shows ✗ for every branch**  
+**Cutoff files check shows ✗ for every branch**  
 Confirm **BRANCH_PATHS** folders exist and that an Excel filename in each folder contains the expected day range (for example `15-21`). Check **PAYROLL_TARGET_PERIOD** (`next`, `current`, or `previous`) and optional **REF_RUN_DATE**.
 
 ---

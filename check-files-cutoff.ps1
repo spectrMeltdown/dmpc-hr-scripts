@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 param(
     [string]$EnvPath = (Join-Path $PSScriptRoot ".env"),
@@ -15,7 +15,7 @@ $script:use_branch_year_month = $false
 $script:branch_year = $null
 $script:branch_month = $null
 $script:refresh_interval_seconds = 0
-$script:incentive_file_extensions = @('.xlsx', '.xls')
+$script:cutoff_file_extensions = @('.xlsx', '.xls')
 $script:recursive = $false
 $script:dir_level_search = 2
 
@@ -305,7 +305,7 @@ function Group-BranchPaths {
     return @($list.ToArray())
 }
 
-function Parse-IncentiveFileExtensions {
+function Parse-CutoffFileExtensions {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Value
@@ -327,7 +327,7 @@ function Parse-IncentiveFileExtensions {
     }
 
     if ($extensions.Count -eq 0) {
-        throw 'INCENTIVE_FILE_EXTENSIONS must contain at least one extension'
+        throw 'CUTOFF_FILE_EXTENSIONS must contain at least one extension'
     }
 
     return @($extensions.ToArray())
@@ -361,7 +361,7 @@ function Test-FilenameContainsDayRange {
     return [bool]($FileName -match $pattern)
 }
 
-function Test-BranchHasIncentiveFile {
+function Test-BranchHasCutoffFile {
     param(
         [Parameter(Mandatory = $true)]
         [string]$FolderPath,
@@ -377,7 +377,7 @@ function Test-BranchHasIncentiveFile {
         return $false
     }
 
-    $allowedExtensions = $script:incentive_file_extensions
+    $allowedExtensions = $script:cutoff_file_extensions
     $childParams = @{
         LiteralPath = $FolderPath
         File        = $true
@@ -403,7 +403,7 @@ function Test-BranchHasIncentiveFile {
     return $false
 }
 
-function Get-BranchesWithIncentives {
+function Get-BranchesWithCutoffFiles {
     param(
         [Parameter(Mandatory = $true)]
         [object[]]$BranchPaths,
@@ -434,7 +434,7 @@ function Get-BranchesWithIncentives {
         foreach ($folderPath in $paths) {
             $pathHasFile = $false
             try {
-                $pathHasFile = Test-BranchHasIncentiveFile -FolderPath $folderPath -StartDay $StartDay -EndDay $EndDay
+                $pathHasFile = Test-BranchHasCutoffFile -FolderPath $folderPath -StartDay $StartDay -EndDay $EndDay
             }
             catch {
                 $pathHasFile = $false
@@ -469,7 +469,7 @@ function Get-BranchesWithIncentives {
     return @($results.ToArray())
 }
 
-function Format-IncentivesChecklist {
+function Format-CutoffFilesChecklist {
     param(
         [Parameter(Mandatory = $true)]
         [object[]]$Results
@@ -487,7 +487,7 @@ function Format-IncentivesChecklist {
     return ($lines -join [Environment]::NewLine)
 }
 
-function Test-IncentivesDisplayChanged {
+function Test-CutoffFilesDisplayChanged {
     param(
         [hashtable]$Previous,
         [hashtable]$Current
@@ -500,7 +500,7 @@ function Test-IncentivesDisplayChanged {
     return $Previous.Body -ne $Current.Body
 }
 
-function Invoke-IncentivesChangeAlert {
+function Invoke-CutoffFilesChangeAlert {
     try {
         Add-Type -AssemblyName System.Media -ErrorAction Stop
         [System.Media.SystemSounds]::Exclamation.Play()
@@ -510,7 +510,7 @@ function Invoke-IncentivesChangeAlert {
     }
 }
 
-function Show-IncentivesPopup {
+function Show-CutoffFilesPopup {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Title,
@@ -604,8 +604,8 @@ function Show-IncentivesPopup {
             try {
                 $display = & $refreshCallback
                 if ($display) {
-                    if (Test-IncentivesDisplayChanged -Previous $previousDisplay -Current $display) {
-                        Invoke-IncentivesChangeAlert
+                    if (Test-CutoffFilesDisplayChanged -Previous $previousDisplay -Current $display) {
+                        Invoke-CutoffFilesChangeAlert
                     }
                     $previousDisplay = $display
                     $textBox.Text = $display.Body
@@ -756,9 +756,9 @@ function Initialize-Config {
         $script:refresh_interval_seconds = $parsedRefresh
     }
 
-    if ($envMap.ContainsKey('INCENTIVE_FILE_EXTENSIONS') -and -not [string]::IsNullOrWhiteSpace($envMap['INCENTIVE_FILE_EXTENSIONS'])) {
+    if ($envMap.ContainsKey('CUTOFF_FILE_EXTENSIONS') -and -not [string]::IsNullOrWhiteSpace($envMap['CUTOFF_FILE_EXTENSIONS'])) {
         try {
-            $script:incentive_file_extensions = @(Parse-IncentiveFileExtensions -Value $envMap['INCENTIVE_FILE_EXTENSIONS'])
+            $script:cutoff_file_extensions = @(Parse-CutoffFileExtensions -Value $envMap['CUTOFF_FILE_EXTENSIONS'])
         }
         catch {
             Write-Error $_.Exception.Message
@@ -780,7 +780,7 @@ function Initialize-Config {
     }
 }
 
-function Get-IncentivesCheckDisplay {
+function Get-CutoffFilesCheckDisplay {
     $referenceDate = if ($script:ref_run_date) { $script:ref_run_date } else { [DateTime]::Today }
 
     $period = Get-BranchPayrollPeriod `
@@ -793,7 +793,7 @@ function Get-IncentivesCheckDisplay {
     $endDay = $period.End.Day
     $dayRangeLabel = '{0}-{1}' -f $startDay, $endDay
 
-    $branches_with_incentives = Get-BranchesWithIncentives `
+    $branches_with_cutoff_files = Get-BranchesWithCutoffFiles `
         -BranchPaths $script:branch_paths `
         -StartDay $startDay `
         -EndDay $endDay `
@@ -802,20 +802,20 @@ function Get-IncentivesCheckDisplay {
             Write-Log "Cannot scan '$($branch.Label)' ($($branch.Path)): $message" -Level ERROR
         }
 
-    $checklist = Format-IncentivesChecklist -Results $branches_with_incentives
-    $title = 'Incentives check - {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd})' -f `
+    $checklist = Format-CutoffFilesChecklist -Results $branches_with_cutoff_files
+    $title = 'Cutoff files check - {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd})' -f `
         $dayRangeLabel, $period.Start, $period.End
 
     return @{
         Title         = $title
         Body          = $checklist
-        Results       = $branches_with_incentives
+        Results       = $branches_with_cutoff_files
         Period        = $period
         DayRangeLabel = $dayRangeLabel
     }
 }
 
-function Write-IncentivesCheckLog {
+function Write-CutoffFilesCheckLog {
     param(
         [Parameter(Mandatory = $true)]
         [hashtable]$Display
@@ -823,7 +823,7 @@ function Write-IncentivesCheckLog {
 
     Write-Log ("Payroll period ({0}): {1:yyyy-MM-dd} to {2:yyyy-MM-dd} (day range {3})" -f `
             $script:payroll_target_period, $Display.Period.Start, $Display.Period.End, $Display.DayRangeLabel)
-    Write-Log "Incentives checklist:`n$($Display.Body)"
+    Write-Log "Cutoff files checklist:`n$($Display.Body)"
 
     foreach ($item in $Display.Results) {
         if ($item.PSObject.Properties['PathResults'] -and $item.PathResults) {
@@ -839,16 +839,16 @@ function Write-IncentivesCheckLog {
     }
 }
 
-function Invoke-CheckIncentives {
+function Invoke-CheckFilesCutoff {
     param(
         [switch]$SkipPopup
     )
 
-    $display = Get-IncentivesCheckDisplay
-    Write-IncentivesCheckLog -Display $display
+    $display = Get-CutoffFilesCheckDisplay
+    Write-CutoffFilesCheckLog -Display $display
 
     if (-not $SkipPopup) {
-        Show-IncentivesPopup -Title $display.Title -Body $display.Body
+        Show-CutoffFilesPopup -Title $display.Title -Body $display.Body
     }
 
     return $display.Results
@@ -860,27 +860,27 @@ if (-not $isDotSourced) {
     Initialize-Config -Path $EnvPath
 
     if ($script:refresh_interval_seconds -le 0) {
-        [void](Invoke-CheckIncentives -SkipPopup:$NoPopup)
+        [void](Invoke-CheckFilesCutoff -SkipPopup:$NoPopup)
     }
     elseif ($NoPopup) {
         while ($true) {
             Initialize-Config -Path $EnvPath
-            $display = Get-IncentivesCheckDisplay
-            Write-IncentivesCheckLog -Display $display
+            $display = Get-CutoffFilesCheckDisplay
+            Write-CutoffFilesCheckLog -Display $display
             Start-Sleep -Seconds $script:refresh_interval_seconds
         }
     }
     else {
-        $display = Get-IncentivesCheckDisplay
-        Write-IncentivesCheckLog -Display $display
+        $display = Get-CutoffFilesCheckDisplay
+        Write-CutoffFilesCheckLog -Display $display
 
         $envPathForRefresh = $EnvPath
-        Show-IncentivesPopup -Title $display.Title -Body $display.Body `
+        Show-CutoffFilesPopup -Title $display.Title -Body $display.Body `
             -RefreshIntervalSeconds $script:refresh_interval_seconds `
             -OnRefresh {
                 Initialize-Config -Path $envPathForRefresh
-                $refreshed = Get-IncentivesCheckDisplay
-                Write-IncentivesCheckLog -Display $refreshed
+                $refreshed = Get-CutoffFilesCheckDisplay
+                Write-CutoffFilesCheckLog -Display $refreshed
                 return $refreshed
             }
     }

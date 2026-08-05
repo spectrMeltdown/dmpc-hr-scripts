@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-. (Join-Path $repoRoot 'check-incentives.ps1')
+. (Join-Path $repoRoot 'check-files-cutoff.ps1')
 
 function Assert-True {
     param(
@@ -109,7 +109,7 @@ Assert-BranchYearMonthConfig -UseBranchYearMonth $false -BranchYear '' -BranchMo
 $envFile = Join-Path ([IO.Path]::GetTempPath()) ("branch-paths-env-" + [guid]::NewGuid().ToString('N') + '.env')
 try {
     @(
-        'LOG_PATH=logs\check-incentives.log'
+        'LOG_PATH=logs\check-files-cutoff.log'
         'BRANCH_PATHS=Pandesalan=C:\branch\a'
         'BRANCH_PATHS=Mindoro=C:\branch\b'
     ) | Set-Content -LiteralPath $envFile -Encoding UTF8
@@ -131,7 +131,7 @@ finally {
 
 # --- Folder scan ---
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("check-incentives-tests-" + [guid]::NewGuid().ToString('N'))
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("check-files-cutoff-tests-" + [guid]::NewGuid().ToString('N'))
 $branchA = Join-Path $tempRoot 'A'
 $branchB = Join-Path $tempRoot 'B'
 $missing = Join-Path $tempRoot 'Missing'
@@ -148,14 +148,14 @@ try {
     New-Item -ItemType Directory -Path $lockOnly -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $lockOnly '~$Incentives JULY 8-14, 2026.xlsx') -Value 'lock' -Encoding UTF8
 
-    Assert-True (Test-BranchHasIncentiveFile -FolderPath $branchA -StartDay 8 -EndDay 14) `
-        'Branch A should have incentives for 8-14'
-    Assert-True (-not (Test-BranchHasIncentiveFile -FolderPath $branchB -StartDay 8 -EndDay 14)) `
-        'Branch B should not have incentives for 8-14'
-    Assert-True (-not (Test-BranchHasIncentiveFile -FolderPath $missing -StartDay 8 -EndDay 14)) `
-        'Missing folder should report no incentives'
-    Assert-True (-not (Test-BranchHasIncentiveFile -FolderPath $lockOnly -StartDay 8 -EndDay 14)) `
-        'Folder with only a ~$ lock file should report no incentives'
+    Assert-True (Test-BranchHasCutoffFile -FolderPath $branchA -StartDay 8 -EndDay 14) `
+        'Branch A should have cutoff files for 8-14'
+    Assert-True (-not (Test-BranchHasCutoffFile -FolderPath $branchB -StartDay 8 -EndDay 14)) `
+        'Branch B should not have cutoff files for 8-14'
+    Assert-True (-not (Test-BranchHasCutoffFile -FolderPath $missing -StartDay 8 -EndDay 14)) `
+        'Missing folder should report no cutoff files'
+    Assert-True (-not (Test-BranchHasCutoffFile -FolderPath $lockOnly -StartDay 8 -EndDay 14)) `
+        'Folder with only a ~$ lock file should report no cutoff files'
 
     $branches = @(
         [pscustomobject]@{ Label = 'Alpha'; Path = $branchA }
@@ -163,13 +163,13 @@ try {
         [pscustomobject]@{ Label = 'Gone'; Path = $missing }
     )
 
-    $results = @(Get-BranchesWithIncentives -BranchPaths $branches -StartDay 8 -EndDay 14)
+    $results = @(Get-BranchesWithCutoffFiles -BranchPaths $branches -StartDay 8 -EndDay 14)
     Assert-True ($results.Count -eq 3) "Expected 3 results, got $($results.Count)"
     Assert-True ($results[0].HasFile -eq $true) 'Alpha should be true'
     Assert-True ($results[1].HasFile -eq $false) 'Beta should be false'
     Assert-True ($results[2].HasFile -eq $false) 'Gone should be false'
 
-    $checklist = Format-IncentivesChecklist -Results $results
+    $checklist = Format-CutoffFilesChecklist -Results $results
     Assert-True ($checklist -match [regex]::Escape('[OK] Alpha')) 'Checklist should mark Alpha present'
     Assert-True ($checklist -match [regex]::Escape('[X] Beta')) 'Checklist should mark Beta missing'
     Assert-True ($checklist -match [regex]::Escape('[X] Gone')) 'Checklist should mark Gone missing'
@@ -180,4 +180,4 @@ finally {
     }
 }
 
-Write-Host 'Check-Incentives.Tests.ps1: all assertions passed.'
+Write-Host 'Check-Files-Cutoff.Tests.ps1: all assertions passed.'
