@@ -58,7 +58,7 @@ Optional:
 | **USE_BRANCH_YEAR_MONTH** | `true` to append **BRANCH_YEAR**\\**BRANCH_MONTH** under each branch path. `false` (default) uses paths as written. |
 | **BRANCH_YEAR** | Year folder segment (e.g. `2026`). Required when **USE_BRANCH_YEAR_MONTH** is true. |
 | **BRANCH_MONTH** | Month folder segment (e.g. `7. July`). Required when **USE_BRANCH_YEAR_MONTH** is true. |
-| **PAYROLL_TARGET_PERIOD** | `next` (default, upcoming Wed–Tue week) or `current` (period ending on/before today) |
+| **PAYROLL_TARGET_PERIOD** | `next` (default, upcoming Wed–Tue week), `current` (period ending on/before today), or `previous` (week before current) |
 | **BRANCH_PAYROLL_START_DAY** | Period start weekday (default `Wednesday`) |
 | **BRANCH_PAYROLL_END_DAY** | Period end weekday (default `Tuesday`) |
 | **REF_RUN_DATE** | Optional fixed date `yyyy-MM-dd` used instead of today when calculating the period |
@@ -213,7 +213,7 @@ Use **FOLDER_PATH** and set **RECURSIVE** to `true` only if you need files in su
 Before running on important payroll files, make a copy of the Excel file(s) or folder. The tool saves changes directly to the originals.
 
 **Incentives check shows ✗ for every branch**  
-Confirm **BRANCH_PATHS** folders exist and that an Excel filename in each folder contains the expected day range (for example `15-21`). Check **PAYROLL_TARGET_PERIOD** (`next` vs `current`) and optional **REF_RUN_DATE**.
+Confirm **BRANCH_PATHS** folders exist and that an Excel filename in each folder contains the expected day range (for example `15-21`). Check **PAYROLL_TARGET_PERIOD** (`next`, `current`, or `previous`) and optional **REF_RUN_DATE**.
 
 ---
 

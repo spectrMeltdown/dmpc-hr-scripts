@@ -15,6 +15,7 @@ $script:use_branch_year_month = $false
 $script:branch_year = $null
 $script:branch_month = $null
 $script:refresh_interval_seconds = 0
+$script:incentive_file_extensions = @('.xlsx', '.xls')
 
 function Import-DotEnv {
     param(
@@ -193,6 +194,14 @@ function Get-BranchPayrollPeriod {
         }
         $start = $end.AddDays(-($spanDays - 1))
     }
+    elseif ($period -eq 'previous') {
+        $end = $ref
+        while ($end.DayOfWeek -ne $endDow) {
+            $end = $end.AddDays(-1)
+        }
+        $end = $end.AddDays(-$spanDays)
+        $start = $end.AddDays(-($spanDays - 1))
+    }
     elseif ($period -eq 'next') {
         $start = $ref
         while ($start.DayOfWeek -ne $startDow) {
@@ -204,7 +213,7 @@ function Get-BranchPayrollPeriod {
         $end = $start.AddDays($spanDays - 1)
     }
     else {
-        throw "PAYROLL_TARGET_PERIOD must be 'current' or 'next', got: $TargetPeriod"
+        throw "PAYROLL_TARGET_PERIOD must be 'current', 'next', or 'previous', got: $TargetPeriod"
     }
 
     return @{
@@ -253,6 +262,34 @@ function Parse-BranchPaths {
     return @($list.ToArray())
 }
 
+function Parse-IncentiveFileExtensions {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $extensions = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($segment in ($Value -split ';')) {
+        $part = $segment.Trim()
+        if (-not $part) {
+            continue
+        }
+
+        if (-not $part.StartsWith('.')) {
+            $part = '.' + $part
+        }
+
+        $extensions.Add($part.ToLowerInvariant())
+    }
+
+    if ($extensions.Count -eq 0) {
+        throw 'INCENTIVE_FILE_EXTENSIONS must contain at least one extension'
+    }
+
+    return @($extensions.ToArray())
+}
+
 function Get-DayRangeMatchPattern {
     param(
         [Parameter(Mandatory = $true)]
@@ -297,10 +334,11 @@ function Test-BranchHasIncentiveFile {
         return $false
     }
 
+    $allowedExtensions = $script:incentive_file_extensions
     $files = @(Get-ChildItem -LiteralPath $FolderPath -File -ErrorAction Stop |
         Where-Object {
             -not $_.Name.StartsWith('~$') -and
-            ($_.Extension -ieq '.xlsx' -or $_.Extension -ieq '.xls')
+            ($allowedExtensions -icontains $_.Extension)
         })
 
     foreach ($file in $files) {
@@ -633,6 +671,16 @@ function Initialize-Config {
             exit 1
         }
         $script:refresh_interval_seconds = $parsedRefresh
+    }
+
+    if ($envMap.ContainsKey('INCENTIVE_FILE_EXTENSIONS') -and -not [string]::IsNullOrWhiteSpace($envMap['INCENTIVE_FILE_EXTENSIONS'])) {
+        try {
+            $script:incentive_file_extensions = @(Parse-IncentiveFileExtensions -Value $envMap['INCENTIVE_FILE_EXTENSIONS'])
+        }
+        catch {
+            Write-Error $_.Exception.Message
+            exit 1
+        }
     }
 }
 
