@@ -16,6 +16,8 @@ $script:branch_year = $null
 $script:branch_month = $null
 $script:refresh_interval_seconds = 0
 $script:incentive_file_extensions = @('.xlsx', '.xls')
+$script:recursive = $false
+$script:dir_level_search = 2
 
 function Import-DotEnv {
     param(
@@ -335,7 +337,17 @@ function Test-BranchHasIncentiveFile {
     }
 
     $allowedExtensions = $script:incentive_file_extensions
-    $files = @(Get-ChildItem -LiteralPath $FolderPath -File -ErrorAction Stop |
+    $childParams = @{
+        LiteralPath = $FolderPath
+        File        = $true
+        ErrorAction = 'Stop'
+    }
+    if ($script:recursive) {
+        $childParams['Recurse'] = $true
+        $childParams['Depth'] = $script:dir_level_search
+    }
+
+    $files = @(Get-ChildItem @childParams |
         Where-Object {
             -not $_.Name.StartsWith('~$') -and
             ($allowedExtensions -icontains $_.Extension)
@@ -681,6 +693,19 @@ function Initialize-Config {
             Write-Error $_.Exception.Message
             exit 1
         }
+    }
+
+    $recursiveValue = if ($envMap.ContainsKey('RECURSIVE')) { $envMap['RECURSIVE'] } else { $null }
+    $script:recursive = Test-EnvBool -Value $recursiveValue -Default $false
+
+    $script:dir_level_search = 2
+    if ($envMap.ContainsKey('DIR_LEVEL_SEARCH') -and -not [string]::IsNullOrWhiteSpace($envMap['DIR_LEVEL_SEARCH'])) {
+        $parsedDepth = 0
+        if (-not [int]::TryParse($envMap['DIR_LEVEL_SEARCH'].Trim(), [ref]$parsedDepth) -or $parsedDepth -lt 0) {
+            Write-Error 'DIR_LEVEL_SEARCH must be a non-negative integer'
+            exit 1
+        }
+        $script:dir_level_search = $parsedDepth
     }
 }
 
