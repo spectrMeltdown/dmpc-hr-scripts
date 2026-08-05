@@ -34,7 +34,7 @@ New sheets are added in order from left to right (lowest number first, highest n
 
 ## Check cutoff files (branch folders)
 
-**check-files-cutoff.ps1** resolves the payroll week / cutoff (Wed–Tue by default), looks in each branch folder listed in **BRANCH_PATHS**, and checks whether any Excel file name contains that week’s day range (for example `8-14` in `JULY 8-14, 2026`). It then shows a Windows popup with ✓ / ✗ per branch.
+**check-files-cutoff.ps1** resolves the payroll week / cutoff (Wed–Tue by default), looks in each branch folder listed in **BRANCH_PATHS**, and checks whether any Excel file name contains that week’s day range (for example `8-14` in `JULY 8-14, 2026`, or `29-AUG 5` in `JULY 29-AUG 5`). It then shows a Windows popup with ✓ / ✗ per branch.
 
 ### How to run
 
@@ -64,7 +64,7 @@ Optional:
 | **REF_RUN_DATE** | Optional fixed date `yyyy-MM-dd` used instead of today when calculating the period |
 | **LOG_PATH** | Log file path (e.g. `logs\check-files-cutoff.log`) |
 
-Matching is by **day range only** in the filename (e.g. `8-14` or `08-14`). Month formatting can vary. Only top-level `.xlsx` / `.xls` files are checked (Excel lock files starting with `~$` are skipped).
+Matching is by **day numbers around a dash** in the filename (e.g. `8-14`, `08-14`, or `29-AUG 5` in `JULY 29-AUG 5`). Month text between the days is ignored and does not need to be spelled correctly. Only top-level `.xlsx` / `.xls` files are checked (Excel lock files starting with `~$` are skipped).
 
 **Example — base paths + shared year/month:**
 

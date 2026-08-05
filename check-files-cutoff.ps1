@@ -342,7 +342,7 @@ function Get-DayRangeMatchPattern {
         [int]$EndDay
     )
 
-    return "(?<!\d)0?$StartDay\s{0,2}-\s{0,2}0?$EndDay(?!\d)"
+    return "(?<!\d)0?$StartDay\D{0,20}-\D{0,20}0?$EndDay(?!\d)"
 }
 
 function Test-FilenameContainsDayRange {
