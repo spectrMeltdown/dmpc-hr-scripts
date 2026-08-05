@@ -264,6 +264,47 @@ function Parse-BranchPaths {
     return @($list.ToArray())
 }
 
+function Get-BranchGroupLabel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    return ($Label -replace '-\d+$', '')
+}
+
+function Group-BranchPaths {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$BranchPaths
+    )
+
+    $ordered = [System.Collections.Generic.List[string]]::new()
+    $groups = @{}
+
+    foreach ($branch in $BranchPaths) {
+        $groupLabel = Get-BranchGroupLabel -Label $branch.Label
+        if (-not $groups.ContainsKey($groupLabel)) {
+            $groups[$groupLabel] = [System.Collections.Generic.List[string]]::new()
+            $ordered.Add($groupLabel)
+        }
+        $groups[$groupLabel].Add($branch.Path)
+    }
+
+    $list = [System.Collections.Generic.List[object]]::new()
+    foreach ($groupLabel in $ordered) {
+        $paths = @($groups[$groupLabel].ToArray())
+        $list.Add([pscustomobject]@{
+                Label = $groupLabel
+                Paths = $paths
+                Path  = $paths[0]
+            })
+    }
+
+    return @($list.ToArray())
+}
+
 function Parse-IncentiveFileExtensions {
     param(
         [Parameter(Mandatory = $true)]
@@ -379,21 +420,49 @@ function Get-BranchesWithIncentives {
     $results = [System.Collections.Generic.List[object]]::new()
 
     foreach ($branch in $BranchPaths) {
-        $hasFile = $false
-        try {
-            $hasFile = Test-BranchHasIncentiveFile -FolderPath $branch.Path -StartDay $StartDay -EndDay $EndDay
+        $paths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
+            @($branch.Paths)
         }
-        catch {
-            $hasFile = $false
-            if ($OnError) {
-                & $OnError $branch $_.Exception.Message
+        else {
+            @($branch.Path)
+        }
+
+        $hasFile = $false
+        $matchedPath = $null
+        $pathResults = [System.Collections.Generic.List[object]]::new()
+
+        foreach ($folderPath in $paths) {
+            $pathHasFile = $false
+            try {
+                $pathHasFile = Test-BranchHasIncentiveFile -FolderPath $folderPath -StartDay $StartDay -EndDay $EndDay
+            }
+            catch {
+                $pathHasFile = $false
+                if ($OnError) {
+                    & $OnError ([pscustomobject]@{
+                            Label = $branch.Label
+                            Path  = $folderPath
+                        }) $_.Exception.Message
+                }
+            }
+
+            $pathResults.Add([pscustomobject]@{
+                    Path    = $folderPath
+                    HasFile = $pathHasFile
+                })
+
+            if ($pathHasFile -and -not $hasFile) {
+                $hasFile = $true
+                $matchedPath = $folderPath
             }
         }
 
         $results.Add([pscustomobject]@{
-                Label   = $branch.Label
-                Path    = $branch.Path
-                HasFile = $hasFile
+                Label       = $branch.Label
+                Path        = if ($matchedPath) { $matchedPath } else { $paths[0] }
+                Paths       = $paths
+                PathResults = @($pathResults.ToArray())
+                HasFile     = $hasFile
             })
     }
 
@@ -675,6 +744,8 @@ function Initialize-Config {
         )
     }
 
+    $script:branch_paths = @(Group-BranchPaths -BranchPaths $script:branch_paths)
+
     $script:refresh_interval_seconds = 0
     if ($envMap.ContainsKey('REFRESH_INTERVAL_SECONDS') -and -not [string]::IsNullOrWhiteSpace($envMap['REFRESH_INTERVAL_SECONDS'])) {
         $parsedRefresh = 0
@@ -755,8 +826,16 @@ function Write-IncentivesCheckLog {
     Write-Log "Incentives checklist:`n$($Display.Body)"
 
     foreach ($item in $Display.Results) {
-        $status = if ($item.HasFile) { 'found' } else { 'missing' }
-        Write-Log ("{0}: {1} ({2})" -f $item.Label, $status, $item.Path)
+        if ($item.PSObject.Properties['PathResults'] -and $item.PathResults) {
+            foreach ($pathResult in $item.PathResults) {
+                $status = if ($pathResult.HasFile) { 'found' } else { 'missing' }
+                Write-Log ("{0}: {1} ({2})" -f $item.Label, $status, $pathResult.Path)
+            }
+        }
+        else {
+            $status = if ($item.HasFile) { 'found' } else { 'missing' }
+            Write-Log ("{0}: {1} ({2})" -f $item.Label, $status, $item.Path)
+        }
     }
 }
 
