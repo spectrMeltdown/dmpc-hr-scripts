@@ -18,6 +18,7 @@ $script:refresh_interval_seconds = 0
 $script:cutoff_file_extensions = @('.xlsx', '.xls')
 $script:recursive = $false
 $script:dir_level_search = 2
+$script:debug_open_flow = $false
 
 function Import-DotEnv {
     param(
@@ -294,10 +295,10 @@ function Group-BranchPaths {
 
     $list = [System.Collections.Generic.List[object]]::new()
     foreach ($groupLabel in $ordered) {
-        $paths = @($groups[$groupLabel].ToArray())
+        [string[]]$paths = @($groups[$groupLabel].ToArray())
         $list.Add([pscustomobject]@{
                 Label = $groupLabel
-                Paths = $paths
+                Paths = [string[]]@($paths)
                 Path  = $paths[0]
             })
     }
@@ -374,6 +375,7 @@ function Test-BranchHasCutoffFile {
     )
 
     if (-not (Test-Path -LiteralPath $FolderPath -PathType Container)) {
+        Write-DebugOpenFlowLog "Scan path missing or not a folder: Path='$FolderPath'"
         return $false
     }
 
@@ -388,18 +390,25 @@ function Test-BranchHasCutoffFile {
         $childParams['Depth'] = $script:dir_level_search
     }
 
+    Write-DebugOpenFlowLog ("Scanning path: Path='{0}', StartDay={1}, EndDay={2}, Recursive={3}, Depth={4}, Extensions={5}" -f `
+            $FolderPath, $StartDay, $EndDay, $script:recursive, $script:dir_level_search, ($allowedExtensions -join ','))
+
     $files = @(Get-ChildItem @childParams |
         Where-Object {
             -not $_.Name.StartsWith('~$') -and
             ($allowedExtensions -icontains $_.Extension)
         })
 
+    Write-DebugOpenFlowLog ("Candidate files found: Path='{0}', Count={1}" -f $FolderPath, $files.Count)
+
     foreach ($file in $files) {
         if (Test-FilenameContainsDayRange -FileName $file.Name -StartDay $StartDay -EndDay $EndDay) {
+            Write-DebugOpenFlowLog ("Matched cutoff file: Path='{0}', File='{1}'" -f $FolderPath, $file.FullName)
             return $true
         }
     }
 
+    Write-DebugOpenFlowLog "No matching cutoff file in path: Path='$FolderPath'"
     return $false
 }
 
@@ -420,12 +429,15 @@ function Get-BranchesWithCutoffFiles {
     $results = [System.Collections.Generic.List[object]]::new()
 
     foreach ($branch in $BranchPaths) {
-        $paths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
+        [string[]]$paths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
             @($branch.Paths)
         }
         else {
             @($branch.Path)
         }
+
+        Write-DebugOpenFlowLog ("Evaluating branch: Label='{0}', PathCount={1}, Paths='{2}'" -f `
+                $branch.Label, $paths.Count, ($paths -join "'; '"))
 
         $hasFile = $false
         $matchedPath = $null
@@ -434,10 +446,15 @@ function Get-BranchesWithCutoffFiles {
         foreach ($folderPath in $paths) {
             $pathHasFile = $false
             try {
+                Write-DebugOpenFlowLog ("Checking branch path: Label='{0}', Path='{1}'" -f $branch.Label, $folderPath)
                 $pathHasFile = Test-BranchHasCutoffFile -FolderPath $folderPath -StartDay $StartDay -EndDay $EndDay
+                Write-DebugOpenFlowLog ("Branch path result: Label='{0}', Path='{1}', HasFile={2}" -f `
+                        $branch.Label, $folderPath, $pathHasFile)
             }
             catch {
                 $pathHasFile = $false
+                Write-DebugOpenFlowLog ("Branch path scan error: Label='{0}', Path='{1}', Message='{2}'" -f `
+                        $branch.Label, $folderPath, $_.Exception.Message)
                 if ($OnError) {
                     & $OnError ([pscustomobject]@{
                             Label = $branch.Label
@@ -457,10 +474,14 @@ function Get-BranchesWithCutoffFiles {
             }
         }
 
+        $selectedPath = if ($matchedPath) { $matchedPath } else { $paths[0] }
+        Write-DebugOpenFlowLog ("Branch final result: Label='{0}', HasFile={1}, SelectedPath='{2}', MatchedPath='{3}'" -f `
+                $branch.Label, $hasFile, $selectedPath, $matchedPath)
+
         $results.Add([pscustomobject]@{
                 Label       = $branch.Label
-                Path        = if ($matchedPath) { $matchedPath } else { $paths[0] }
-                Paths       = $paths
+                Path        = $selectedPath
+                Paths       = [string[]]@($paths)
                 PathResults = @($pathResults.ToArray())
                 HasFile     = $hasFile
             })
@@ -510,12 +531,27 @@ function Invoke-CutoffFilesChangeAlert {
     }
 }
 
-function Open-CutoffFolderInExplorer {
+function Get-ExplorerFolderPathArgument {
     param(
+        [Parameter(Mandatory = $true)]
         [string]$FolderPath
     )
 
+    $resolvedPath = (Resolve-Path -LiteralPath $FolderPath).ProviderPath
+    return '"' + $resolvedPath + '"'
+}
+
+function Open-CutoffFolderInExplorer {
+    param(
+        [string]$FolderPath,
+
+        [string]$BranchLabel
+    )
+
+    Write-DebugOpenFlowLog ("Open requested: Label='{0}', InputPath='{1}'" -f $BranchLabel, $FolderPath)
+
     if ([string]::IsNullOrWhiteSpace($FolderPath)) {
+        Write-DebugOpenFlowLog ("Open blocked: Label='{0}', Reason='blank path'" -f $BranchLabel)
         [System.Windows.Forms.MessageBox]::Show(
             'No folder path is configured for this branch.',
             'Open folder',
@@ -525,7 +561,11 @@ function Open-CutoffFolderInExplorer {
         return
     }
 
-    if (-not (Test-Path -LiteralPath $FolderPath)) {
+    $pathExists = Test-Path -LiteralPath $FolderPath -PathType Container
+    Write-DebugOpenFlowLog ("Open path test: Label='{0}', InputPath='{1}', Exists={2}" -f $BranchLabel, $FolderPath, $pathExists)
+
+    if (-not $pathExists) {
+        Write-DebugOpenFlowLog ("Open blocked: Label='{0}', Reason='folder not found', InputPath='{1}'" -f $BranchLabel, $FolderPath)
         [System.Windows.Forms.MessageBox]::Show(
             "Folder not found:`n$FolderPath",
             'Open folder',
@@ -535,7 +575,23 @@ function Open-CutoffFolderInExplorer {
         return
     }
 
-    Start-Process -FilePath 'explorer.exe' -ArgumentList @($FolderPath)
+    try {
+        $explorerPathArgument = Get-ExplorerFolderPathArgument -FolderPath $FolderPath
+        Write-DebugOpenFlowLog ("Explorer launch: Label='{0}', InputPath='{1}', Argument={2}" -f `
+                $BranchLabel, $FolderPath, $explorerPathArgument)
+        Start-Process -FilePath 'explorer.exe' -ArgumentList $explorerPathArgument -ErrorAction Stop
+        Write-DebugOpenFlowLog ("Explorer launch requested successfully: Label='{0}', InputPath='{1}'" -f $BranchLabel, $FolderPath)
+    }
+    catch {
+        Write-DebugOpenFlowLog ("Explorer launch failed: Label='{0}', InputPath='{1}', Message='{2}'" -f `
+                $BranchLabel, $FolderPath, $_.Exception.Message)
+        [System.Windows.Forms.MessageBox]::Show(
+            "Could not open folder:`n$FolderPath`n`n$($_.Exception.Message)",
+            'Open folder',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+    }
 }
 
 function Show-CutoffFilesPopup {
@@ -636,6 +692,17 @@ function Show-CutoffFilesPopup {
         $y = 0
         foreach ($item in @($RowResults)) {
             $status = if ($item.HasFile) { '[OK]' } else { '[X]' }
+            $pathResultsForLog = if ($item.PSObject.Properties['PathResults'] -and $item.PathResults) {
+                @(foreach ($pathResult in $item.PathResults) {
+                        '{0}={1}' -f $pathResult.Path, $pathResult.HasFile
+                    }) -join '; '
+            }
+            else {
+                ''
+            }
+            Write-DebugOpenFlowLog ("Popup row bind: Label='{0}', HasFile={1}, ButtonPath='{2}', PathResults='{3}'" -f `
+                    $item.Label, $item.HasFile, $item.Path, $pathResultsForLog)
+
             $rowPanel = New-Object System.Windows.Forms.Panel
             $rowPanel.Location = New-Object System.Drawing.Point(0, $y)
             $rowPanel.Size = New-Object System.Drawing.Size($rowInnerWidth, $rowHeight)
@@ -656,10 +723,18 @@ function Show-CutoffFilesPopup {
                 ($rowInnerWidth - $openButtonWidth),
                 [Math]::Floor(($rowHeight - $openButtonHeight) / 2)
             )
-            $openButton.Tag = $item.Path
+            $openButton.Tag = [pscustomobject]@{
+                Label       = $item.Label
+                Path        = $item.Path
+                HasFile     = $item.HasFile
+                PathResults = $item.PathResults
+            }
             $openButton.Add_Click({
                 param($sender, $eventArgs)
-                Open-CutoffFolderInExplorer -FolderPath ([string]$sender.Tag)
+                $tag = $sender.Tag
+                Write-DebugOpenFlowLog ("Open button clicked: Label='{0}', Path='{1}', HasFile={2}" -f `
+                        $tag.Label, $tag.Path, $tag.HasFile)
+                Open-CutoffFolderInExplorer -FolderPath ([string]$tag.Path) -BranchLabel ([string]$tag.Label)
             })
 
             $rowPanel.Controls.Add($statusLabel)
@@ -741,6 +816,19 @@ function Write-Log {
     Add-Content -LiteralPath $script:log_path -Value $line -Encoding UTF8
 }
 
+function Write-DebugOpenFlowLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    if (-not $script:debug_open_flow) {
+        return
+    }
+
+    Write-Log "[open-flow] $Message"
+}
+
 function Initialize-Config {
     param(
         [Parameter(Mandatory = $true)]
@@ -760,6 +848,11 @@ function Initialize-Config {
     }
 
     $script:log_path = Resolve-ConfigPath -PathValue $envMap['LOG_PATH']
+
+    $debugOpenFlowValue = if ($envMap.ContainsKey('DEBUG_OPEN_FLOW')) { $envMap['DEBUG_OPEN_FLOW'] } else { $null }
+    $script:debug_open_flow = Test-EnvBool -Value $debugOpenFlowValue -Default $false
+    Write-DebugOpenFlowLog ("Config loaded: EnvPath='{0}', LogPath='{1}', DebugOpenFlow={2}" -f `
+            $Path, $script:log_path, $script:debug_open_flow)
 
     if ($envMap.ContainsKey('BRANCH_PAYROLL_START_DAY') -and -not [string]::IsNullOrWhiteSpace($envMap['BRANCH_PAYROLL_START_DAY'])) {
         $script:branch_payroll_start_day = $envMap['BRANCH_PAYROLL_START_DAY'].Trim()
@@ -800,6 +893,7 @@ function Initialize-Config {
 
     try {
         $script:branch_paths = @(Parse-BranchPaths -Value $envMap['BRANCH_PATHS'])
+        Write-DebugOpenFlowLog ("Parsed branch paths: Count={0}" -f $script:branch_paths.Count)
     }
     catch {
         Write-Error $_.Exception.Message
@@ -824,9 +918,22 @@ function Initialize-Config {
                 }
             }
         )
+        Write-DebugOpenFlowLog ("Applied branch year/month suffix: Year='{0}', Month='{1}', Count={2}" -f `
+                $script:branch_year, $script:branch_month, $script:branch_paths.Count)
     }
 
     $script:branch_paths = @(Group-BranchPaths -BranchPaths $script:branch_paths)
+    Write-DebugOpenFlowLog ("Grouped branch paths: Count={0}" -f $script:branch_paths.Count)
+    foreach ($branch in $script:branch_paths) {
+        [string[]]$paths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
+            @($branch.Paths)
+        }
+        else {
+            @($branch.Path)
+        }
+        Write-DebugOpenFlowLog ("Grouped branch: Label='{0}', PrimaryPath='{1}', Paths='{2}'" -f `
+                $branch.Label, $branch.Path, ($paths -join "'; '"))
+    }
 
     $script:refresh_interval_seconds = 0
     if ($envMap.ContainsKey('REFRESH_INTERVAL_SECONDS') -and -not [string]::IsNullOrWhiteSpace($envMap['REFRESH_INTERVAL_SECONDS'])) {
@@ -860,6 +967,9 @@ function Initialize-Config {
         }
         $script:dir_level_search = $parsedDepth
     }
+
+    Write-DebugOpenFlowLog ("Config scan options: RefreshIntervalSeconds={0}, Recursive={1}, Depth={2}, Extensions='{3}'" -f `
+            $script:refresh_interval_seconds, $script:recursive, $script:dir_level_search, ($script:cutoff_file_extensions -join ','))
 }
 
 function Get-CutoffFilesCheckDisplay {
@@ -874,6 +984,8 @@ function Get-CutoffFilesCheckDisplay {
     $startDay = $period.Start.Day
     $endDay = $period.End.Day
     $dayRangeLabel = '{0}-{1}' -f $startDay, $endDay
+    Write-DebugOpenFlowLog ("Display build: ReferenceDate='{0:yyyy-MM-dd}', TargetPeriod='{1}', PeriodStart='{2:yyyy-MM-dd}', PeriodEnd='{3:yyyy-MM-dd}', DayRange='{4}'" -f `
+            $referenceDate, $script:payroll_target_period, $period.Start, $period.End, $dayRangeLabel)
 
     $branches_with_cutoff_files = Get-BranchesWithCutoffFiles `
         -BranchPaths $script:branch_paths `
