@@ -105,6 +105,66 @@ Assert-True $threwMonth 'Expected Assert-BranchYearMonthConfig to throw when BRA
 
 Assert-BranchYearMonthConfig -UseBranchYearMonth $false -BranchYear '' -BranchMonth ''
 
+# Grouped single-path branches must keep the whole string, not the first character.
+$singleGroupedPath = '\\server\AST-AKLAN Branch\Payroll\3. Sales Clerk Incentives\2026\7. July'
+$singleGrouped = @(Group-BranchPaths -BranchPaths @(
+        [pscustomobject]@{ Label = 'Aklan'; Path = $singleGroupedPath }
+    ))
+Assert-True ($singleGrouped.Count -eq 1) "Expected 1 grouped branch, got $($singleGrouped.Count)"
+Assert-True ($singleGrouped[0].Path -eq $singleGroupedPath) `
+    "Grouped primary path mismatch: got $($singleGrouped[0].Path), expected $singleGroupedPath"
+Assert-True ($singleGrouped[0].Paths[0] -eq $singleGroupedPath) `
+    "Grouped Paths[0] mismatch: got $($singleGrouped[0].Paths[0]), expected $singleGroupedPath"
+
+$singleGroupedResults = @(Get-BranchesWithCutoffFiles -BranchPaths $singleGrouped -StartDay 8 -EndDay 14)
+Assert-True ($singleGroupedResults[0].Path -eq $singleGroupedPath) `
+    "No-match selected path mismatch: got $($singleGroupedResults[0].Path), expected $singleGroupedPath"
+
+# --- Explorer path argument ---
+
+$openTempRoot = Join-Path ([IO.Path]::GetTempPath()) ("check-files-open path-" + [guid]::NewGuid().ToString('N'))
+try {
+    $openFolder = Join-Path $openTempRoot 'Branch Folder'
+    New-Item -ItemType Directory -Path $openFolder -Force | Out-Null
+
+    $slashPath = $openFolder.Replace('\', '/')
+    $openArgument = Get-ExplorerFolderPathArgument -FolderPath $slashPath
+    $expectedOpenArgument = '"' + (Resolve-Path -LiteralPath $openFolder).ProviderPath + '"'
+    Assert-True ($openArgument -eq $expectedOpenArgument) `
+        "Explorer argument mismatch: got $openArgument, expected $expectedOpenArgument"
+}
+finally {
+    if (Test-Path -LiteralPath $openTempRoot) {
+        Remove-Item -LiteralPath $openTempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$debugLogRoot = Join-Path ([IO.Path]::GetTempPath()) ("check-files-debug-log-" + [guid]::NewGuid().ToString('N'))
+$debugLogPath = Join-Path $debugLogRoot 'open-flow.log'
+try {
+    $script:log_path = $debugLogPath
+    $script:debug_open_flow = $false
+    Write-DebugOpenFlowLog 'disabled message'
+    Assert-True (-not (Test-Path -LiteralPath $debugLogPath)) 'Disabled debug logging should not create a log file'
+
+    $script:debug_open_flow = $true
+    Write-DebugOpenFlowLog 'enabled message'
+    Assert-True (Test-Path -LiteralPath $debugLogPath) 'Enabled debug logging should create a log file'
+    $debugLogText = Get-Content -LiteralPath $debugLogPath -Raw -Encoding UTF8
+    Assert-True ($debugLogText -match '\[open-flow\] enabled message') 'Enabled debug logging should write the open-flow marker'
+
+    Assert-True (Test-EnvBool -Value 'true' -Default $false) 'DEBUG_OPEN_FLOW=true should parse as true'
+    Assert-True (-not (Test-EnvBool -Value 'false' -Default $true)) 'DEBUG_OPEN_FLOW=false should parse as false'
+    Assert-True (-not (Test-EnvBool -Value $null -Default $false)) 'DEBUG_OPEN_FLOW default should be false'
+}
+finally {
+    $script:debug_open_flow = $false
+    $script:log_path = $null
+    if (Test-Path -LiteralPath $debugLogRoot) {
+        Remove-Item -LiteralPath $debugLogRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Multi-line BRANCH_PATHS= lines are joined by Import-DotEnv
 $envFile = Join-Path ([IO.Path]::GetTempPath()) ("branch-paths-env-" + [guid]::NewGuid().ToString('N') + '.env')
 try {
