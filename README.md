@@ -63,6 +63,7 @@ Optional:
 | **BRANCH_PAYROLL_END_DAY** | Period end weekday (default `Tuesday`) |
 | **REF_RUN_DATE** | Optional fixed date `yyyy-MM-dd` used instead of today when calculating the period |
 | **LOG_PATH** | Log file path (e.g. `logs\check-files-cutoff.log`) |
+| **LOG_LEVEL** | Minimum log level: `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default `INFO`). Use `DEBUG` for open-flow / path troubleshooting detail |
 
 Matching is by **day numbers around a dash** in the filename (e.g. `8-14`, `08-14`, or `29-AUG 5` in `JULY 29-AUG 5`). Month text between the days is ignored and does not need to be spelled correctly. Only top-level `.xlsx` / `.xls` files are checked (Excel lock files starting with `~$` are skipped).
 
@@ -177,6 +178,7 @@ RECURSIVE=false
 | Setting | What it means |
 |--------|----------------|
 | **LOG_PATH** | Where the tool writes a record of what it did. Default: `logs\payroll-update.log` |
+| **LOG_LEVEL** | Minimum log level: `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default `INFO`) |
 | **TARGET_CELLS** | Which cells have formulas that need updating. Usually leave this as provided unless your IT contact tells you to change it. |
 
 ---

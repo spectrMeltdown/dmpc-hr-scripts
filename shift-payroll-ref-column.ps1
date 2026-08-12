@@ -10,6 +10,7 @@ $file_path = $null
 $folder_path = $null
 $recursive = $false
 $log_path = $null
+$log_level = 'INFO'
 $TargetCells = @()
 $onlyNumSheets = $false
 $dryRun = $false
@@ -180,6 +181,43 @@ function Initialize-Config {
     $script:columnDelta = if ($script:incrementMode) { 1 } else { -1 }
 
     $script:log_path = Resolve-ConfigPath -PathValue $env['LOG_PATH']
+
+    $logLevelValue = if ($env.ContainsKey('LOG_LEVEL')) { $env['LOG_LEVEL'] } else { $null }
+    $script:log_level = Resolve-LogLevel -Value $logLevelValue
+}
+
+function Get-LogLevelRank {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Level
+    )
+
+    switch ($Level.ToUpperInvariant()) {
+        'TRACE' { return 0 }
+        'DEBUG' { return 1 }
+        'INFO' { return 2 }
+        'WARNING' { return 3 }
+        'ERROR' { return 4 }
+        default { return -1 }
+    }
+}
+
+function Resolve-LogLevel {
+    param(
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return 'INFO'
+    }
+
+    $normalized = $Value.Trim().ToUpperInvariant()
+    if ((Get-LogLevelRank -Level $normalized) -lt 0) {
+        Write-Error "LOG_LEVEL must be one of: TRACE, DEBUG, INFO, WARNING, ERROR. Got: $Value"
+        exit 1
+    }
+
+    return $normalized
 }
 
 function Write-Log {
@@ -187,9 +225,14 @@ function Write-Log {
         [Parameter(Mandatory = $true)]
         [string]$Message,
 
-        [ValidateSet('INFO', 'WARN', 'ERROR')]
+        [ValidateSet('TRACE', 'DEBUG', 'INFO', 'WARNING', 'ERROR')]
         [string]$Level = 'INFO'
     )
+
+    $configuredLevel = if ([string]::IsNullOrWhiteSpace($script:log_level)) { 'INFO' } else { $script:log_level }
+    if ((Get-LogLevelRank -Level $Level) -lt (Get-LogLevelRank -Level $configuredLevel)) {
+        return
+    }
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $line = "[$timestamp] $Level  $Message"
@@ -323,13 +366,13 @@ function Update-TargetCellFormulas {
         $formula = $cell.Formula
 
         if (-not $formula -or $formula -notlike '=*') {
-            Write-Log "Sheet $SheetLabel cell ${address}: not a formula, skipped" -Level WARN
+            Write-Log "Sheet $SheetLabel cell ${address}: not a formula, skipped" -Level DEBUG
             $skipped++
             continue
         }
 
         if ($formula -notmatch $ExternalRefPattern) {
-            Write-Log "Sheet $SheetLabel cell ${address}: no external sheet reference in formula, skipped" -Level WARN
+            Write-Log "Sheet $SheetLabel cell ${address}: no external sheet reference in formula, skipped" -Level DEBUG
             $skipped++
             continue
         }
@@ -337,17 +380,17 @@ function Update-TargetCellFormulas {
         $newFormula = Shift-ExternalRefColumns -Formula $formula -Delta $columnDelta
 
         if ($newFormula -eq $formula) {
-            Write-Log "Sheet $SheetLabel cell ${address}: column shift produced no change, skipped" -Level WARN
+            Write-Log "Sheet $SheetLabel cell ${address}: column shift produced no change, skipped" -Level DEBUG
             $skipped++
             continue
         }
 
         if ($dryRun) {
-            Write-Log "Sheet $SheetLabel cell ${address}: WOULD UPDATE old=$formula new=$newFormula"
+            Write-Log "Sheet $SheetLabel cell ${address}: WOULD UPDATE old=$formula new=$newFormula" -Level DEBUG
         }
         else {
             $cell.Formula = $newFormula
-            Write-Log "Sheet $SheetLabel cell ${address}: updated old=$formula new=$newFormula"
+            Write-Log "Sheet $SheetLabel cell ${address}: updated old=$formula new=$newFormula" -Level DEBUG
         }
 
         $updated++
@@ -400,7 +443,7 @@ function Invoke-ShiftPayrollRefColumn {
     )
 
     Write-Log "Starting shift payroll reference column letters"
-    Write-Log "workbook_path=$WorkbookPath target_cells=$($TargetCells.Count) increment_mode=$incrementMode column_delta=$columnDelta only_num_sheets=$onlyNumSheets dry_run=$dryRun"
+    Write-Log "workbook_path=$WorkbookPath target_cells=$($TargetCells.Count) increment_mode=$incrementMode column_delta=$columnDelta only_num_sheets=$onlyNumSheets dry_run=$dryRun" -Level DEBUG
 
     $excel = $null
     $workbook = $null
@@ -414,7 +457,7 @@ function Invoke-ShiftPayrollRefColumn {
 
         $targetSheets = Get-TargetWorksheets -Workbook $workbook
         if ($targetSheets.Count -eq 0) {
-            Write-Log "No worksheets matched ONLY_NUM_SHEETS=$onlyNumSheets filter" -Level WARN
+            Write-Log "No worksheets matched ONLY_NUM_SHEETS=$onlyNumSheets filter" -Level WARNING
         }
 
         $totalUpdated = 0
@@ -422,7 +465,7 @@ function Invoke-ShiftPayrollRefColumn {
 
         foreach ($sheet in $targetSheets) {
             $sheetLabel = $sheet.Name
-            Write-Log "Processing sheet '$sheetLabel'"
+            Write-Log "Processing sheet '$sheetLabel'" -Level DEBUG
 
             $result = Update-TargetCellFormulas -Worksheet $sheet -SheetLabel $sheetLabel
             $totalUpdated += $result.Updated
@@ -472,7 +515,7 @@ catch {
 
 Write-Log "Processing $($workbookPaths.Count) workbook(s)"
 if (-not [string]::IsNullOrWhiteSpace($folder_path)) {
-    Write-Log "folder_path=$folder_path recursive=$recursive"
+    Write-Log "folder_path=$folder_path recursive=$recursive" -Level DEBUG
 }
 
 $failures = @()

@@ -10,6 +10,7 @@ $recursive = $false
 $sheet_name = $null
 $sheet_range = @()
 $log_path = $null
+$log_level = 'INFO'
 $TargetCells = @()
 
 $ExternalRefPattern = "('[^']+'![A-Z]{1,3})(\d+)"
@@ -158,6 +159,9 @@ function Initialize-Config {
 
     $script:log_path = Resolve-ConfigPath -PathValue $env['LOG_PATH']
 
+    $logLevelValue = if ($env.ContainsKey('LOG_LEVEL')) { $env['LOG_LEVEL'] } else { $null }
+    $script:log_level = Resolve-LogLevel -Value $logLevelValue
+
     $cellGroups = Import-TargetCellGroups -Env $env
     $script:TargetCells = @($cellGroups | ForEach-Object { $_.Cells })
     if ($script:TargetCells.Count -eq 0) {
@@ -166,14 +170,53 @@ function Initialize-Config {
     }
 }
 
+function Get-LogLevelRank {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Level
+    )
+
+    switch ($Level.ToUpperInvariant()) {
+        'TRACE' { return 0 }
+        'DEBUG' { return 1 }
+        'INFO' { return 2 }
+        'WARNING' { return 3 }
+        'ERROR' { return 4 }
+        default { return -1 }
+    }
+}
+
+function Resolve-LogLevel {
+    param(
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return 'INFO'
+    }
+
+    $normalized = $Value.Trim().ToUpperInvariant()
+    if ((Get-LogLevelRank -Level $normalized) -lt 0) {
+        Write-Error "LOG_LEVEL must be one of: TRACE, DEBUG, INFO, WARNING, ERROR. Got: $Value"
+        exit 1
+    }
+
+    return $normalized
+}
+
 function Write-Log {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Message,
 
-        [ValidateSet('INFO', 'WARN', 'ERROR')]
+        [ValidateSet('TRACE', 'DEBUG', 'INFO', 'WARNING', 'ERROR')]
         [string]$Level = 'INFO'
     )
+
+    $configuredLevel = if ([string]::IsNullOrWhiteSpace($script:log_level)) { 'INFO' } else { $script:log_level }
+    if ((Get-LogLevelRank -Level $Level) -lt (Get-LogLevelRank -Level $configuredLevel)) {
+        return
+    }
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $line = "[$timestamp] $Level  $Message"
@@ -232,7 +275,7 @@ function Update-TargetCellFormulas {
         $formula = $cell.Formula
 
         if (-not $formula -or $formula -notlike '=*') {
-            Write-Log "Sheet $SheetLabel cell ${address}: not a formula, skipped" -Level WARN
+            Write-Log "Sheet $SheetLabel cell ${address}: not a formula, skipped" -Level DEBUG
             $skipped++
             continue
         }
@@ -240,7 +283,7 @@ function Update-TargetCellFormulas {
         $newFormula = Increment-ExternalRefRows -Formula $formula -Increment $Increment
 
         if ($newFormula -eq $formula) {
-            Write-Log "Sheet $SheetLabel cell ${address}: no external ref row to increment, skipped" -Level WARN
+            Write-Log "Sheet $SheetLabel cell ${address}: no external ref row to increment, skipped" -Level DEBUG
             $skipped++
             continue
         }
@@ -333,7 +376,7 @@ function Rename-LegacySheet {
         $suffix++
     }
 
-    Write-Log "Renaming legacy sheet '$TargetName' to '$legacyName' (not in voucher block)" -Level WARN
+    Write-Log "Renaming legacy sheet '$TargetName' to '$legacyName' (not in voucher block)" -Level WARNING
     $Sheet.Name = $legacyName
 }
 
@@ -359,7 +402,7 @@ function Set-TargetCellFormulasFromTemplate {
         $templateFormula = $TemplateWorksheet.Range($address).Formula
 
         if (-not $templateFormula -or $templateFormula -notlike '=*') {
-            Write-Log "Sheet $SheetLabel cell ${address}: template not a formula, skipped" -Level WARN
+            Write-Log "Sheet $SheetLabel cell ${address}: template not a formula, skipped" -Level DEBUG
             $skipped++
             continue
         }
@@ -416,7 +459,7 @@ function Invoke-PayrollSheetUpdate {
     )
 
     Write-Log "Starting payroll sheet update"
-    Write-Log "workbook_path=$WorkbookPath sheet_name=$sheet_name sheet_range=[$($sheet_range[0]), $($sheet_range[1])]"
+    Write-Log "workbook_path=$WorkbookPath sheet_name=$sheet_name sheet_range=[$($sheet_range[0]), $($sheet_range[1])]" -Level DEBUG
 
     if ($sheet_range.Count -lt 2) {
         Write-Log "sheet_range must contain start and stop values, e.g. @(3, 5)" -Level ERROR
@@ -521,7 +564,7 @@ catch {
 
 Write-Log "Processing $($workbookPaths.Count) workbook(s)"
 if (-not [string]::IsNullOrWhiteSpace($folder_path)) {
-    Write-Log "folder_path=$folder_path recursive=$recursive"
+    Write-Log "folder_path=$folder_path recursive=$recursive" -Level DEBUG
 }
 
 $failures = @()

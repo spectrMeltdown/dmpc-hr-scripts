@@ -143,22 +143,22 @@ $debugLogRoot = Join-Path ([IO.Path]::GetTempPath()) ("check-files-debug-log-" +
 $debugLogPath = Join-Path $debugLogRoot 'open-flow.log'
 try {
     $script:log_path = $debugLogPath
-    $script:debug_open_flow = $false
-    Write-DebugOpenFlowLog 'disabled message'
-    Assert-True (-not (Test-Path -LiteralPath $debugLogPath)) 'Disabled debug logging should not create a log file'
+    $script:log_level = 'INFO'
+    Write-Log '[open-flow] suppressed message' -Level DEBUG
+    Assert-True (-not (Test-Path -LiteralPath $debugLogPath)) 'DEBUG lines should be suppressed when LOG_LEVEL is INFO'
 
-    $script:debug_open_flow = $true
-    Write-DebugOpenFlowLog 'enabled message'
-    Assert-True (Test-Path -LiteralPath $debugLogPath) 'Enabled debug logging should create a log file'
+    $script:log_level = 'DEBUG'
+    Write-Log '[open-flow] enabled message' -Level DEBUG
+    Assert-True (Test-Path -LiteralPath $debugLogPath) 'DEBUG lines should create a log file when LOG_LEVEL is DEBUG'
     $debugLogText = Get-Content -LiteralPath $debugLogPath -Raw -Encoding UTF8
-    Assert-True ($debugLogText -match '\[open-flow\] enabled message') 'Enabled debug logging should write the open-flow marker'
+    Assert-True ($debugLogText -match '\[open-flow\] enabled message') 'DEBUG logging should write the open-flow marker'
 
-    Assert-True (Test-EnvBool -Value 'true' -Default $false) 'DEBUG_OPEN_FLOW=true should parse as true'
-    Assert-True (-not (Test-EnvBool -Value 'false' -Default $true)) 'DEBUG_OPEN_FLOW=false should parse as false'
-    Assert-True (-not (Test-EnvBool -Value $null -Default $false)) 'DEBUG_OPEN_FLOW default should be false'
+    Assert-True ((Resolve-LogLevel -Value $null) -eq 'INFO') 'Missing LOG_LEVEL should default to INFO'
+    Assert-True ((Resolve-LogLevel -Value 'debug') -eq 'DEBUG') 'LOG_LEVEL=debug should normalize to DEBUG'
+    Assert-True ((Resolve-LogLevel -Value ' WARNING ') -eq 'WARNING') 'LOG_LEVEL=WARNING should trim and normalize'
 }
 finally {
-    $script:debug_open_flow = $false
+    $script:log_level = 'INFO'
     $script:log_path = $null
     if (Test-Path -LiteralPath $debugLogRoot) {
         Remove-Item -LiteralPath $debugLogRoot -Recurse -Force -ErrorAction SilentlyContinue

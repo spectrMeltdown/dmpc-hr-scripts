@@ -10,6 +10,7 @@ $file_path = $null
 $folder_path = $null
 $recursive = $false
 $log_path = $null
+$log_level = 'INFO'
 $TargetCellGroups = @()
 $onlyNumSheets = $false
 $dryRun = $false
@@ -190,6 +191,43 @@ function Initialize-Config {
     $script:stripExternalPathOnly = Test-EnvBool -Value $stripExternalPathOnlyValue
 
     $script:log_path = Resolve-ConfigPath -PathValue $env['LOG_PATH']
+
+    $logLevelValue = if ($env.ContainsKey('LOG_LEVEL')) { $env['LOG_LEVEL'] } else { $null }
+    $script:log_level = Resolve-LogLevel -Value $logLevelValue
+}
+
+function Get-LogLevelRank {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Level
+    )
+
+    switch ($Level.ToUpperInvariant()) {
+        'TRACE' { return 0 }
+        'DEBUG' { return 1 }
+        'INFO' { return 2 }
+        'WARNING' { return 3 }
+        'ERROR' { return 4 }
+        default { return -1 }
+    }
+}
+
+function Resolve-LogLevel {
+    param(
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return 'INFO'
+    }
+
+    $normalized = $Value.Trim().ToUpperInvariant()
+    if ((Get-LogLevelRank -Level $normalized) -lt 0) {
+        Write-Error "LOG_LEVEL must be one of: TRACE, DEBUG, INFO, WARNING, ERROR. Got: $Value"
+        exit 1
+    }
+
+    return $normalized
 }
 
 function Write-Log {
@@ -197,9 +235,14 @@ function Write-Log {
         [Parameter(Mandatory = $true)]
         [string]$Message,
 
-        [ValidateSet('INFO', 'WARN', 'ERROR')]
+        [ValidateSet('TRACE', 'DEBUG', 'INFO', 'WARNING', 'ERROR')]
         [string]$Level = 'INFO'
     )
+
+    $configuredLevel = if ([string]::IsNullOrWhiteSpace($script:log_level)) { 'INFO' } else { $script:log_level }
+    if ((Get-LogLevelRank -Level $Level) -lt (Get-LogLevelRank -Level $configuredLevel)) {
+        return
+    }
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $line = "[$timestamp] $Level  $Message"
@@ -326,14 +369,14 @@ function Update-TargetCellFormulas {
         $formula = $cell.Formula
 
         if (-not $formula -or $formula -notlike '=*') {
-            Write-Log "Sheet $SheetLabel cell ${address}: not a formula, skipped" -Level WARN
+            Write-Log "Sheet $SheetLabel cell ${address}: not a formula, skipped" -Level DEBUG
             $skipped++
             continue
         }
 
         if ($stripExternalPathOnly) {
             if ($formula -notmatch $ExternalWorkbookRefPattern) {
-                Write-Log "Sheet $SheetLabel cell ${address}: no UNC external workbook reference, skipped" -Level WARN
+                Write-Log "Sheet $SheetLabel cell ${address}: no UNC external workbook reference, skipped" -Level DEBUG
                 $skipped++
                 continue
             }
@@ -342,7 +385,7 @@ function Update-TargetCellFormulas {
         }
         else {
             if ($formula -notmatch $SheetRefPrefixPattern) {
-                Write-Log "Sheet $SheetLabel cell ${address}: no sheet reference in formula, skipped" -Level WARN
+                Write-Log "Sheet $SheetLabel cell ${address}: no sheet reference in formula, skipped" -Level DEBUG
                 $skipped++
                 continue
             }
@@ -351,17 +394,17 @@ function Update-TargetCellFormulas {
         }
 
         if ($newFormula -eq $formula) {
-            Write-Log "Sheet $SheetLabel cell ${address}: already correct, skipped"
+            Write-Log "Sheet $SheetLabel cell ${address}: already correct, skipped" -Level DEBUG
             $skipped++
             continue
         }
 
         if ($dryRun) {
-            Write-Log "Sheet $SheetLabel cell ${address}: WOULD UPDATE old=$formula new=$newFormula"
+            Write-Log "Sheet $SheetLabel cell ${address}: WOULD UPDATE old=$formula new=$newFormula" -Level DEBUG
         }
         else {
             $cell.Formula = $newFormula
-            Write-Log "Sheet $SheetLabel cell ${address}: updated old=$formula new=$newFormula"
+            Write-Log "Sheet $SheetLabel cell ${address}: updated old=$formula new=$newFormula" -Level DEBUG
         }
 
         $updated++
@@ -415,7 +458,7 @@ function Invoke-FixCopiedPayrollSheet {
 
     Write-Log "Starting fix copied payroll sheet references"
     $refIndexes = ($TargetCellGroups | ForEach-Object { $_.RefIndex }) -join ','
-    Write-Log "workbook_path=$WorkbookPath groups=$($TargetCellGroups.Count) ref_indexes=$refIndexes only_num_sheets=$onlyNumSheets strip_external_path_only=$stripExternalPathOnly dry_run=$dryRun"
+    Write-Log "workbook_path=$WorkbookPath groups=$($TargetCellGroups.Count) ref_indexes=$refIndexes only_num_sheets=$onlyNumSheets strip_external_path_only=$stripExternalPathOnly dry_run=$dryRun" -Level DEBUG
 
     $excel = $null
     $workbook = $null
@@ -430,7 +473,7 @@ function Invoke-FixCopiedPayrollSheet {
 
         $targetSheets = Get-TargetWorksheets -Workbook $workbook
         if ($targetSheets.Count -eq 0) {
-            Write-Log "No worksheets matched ONLY_NUM_SHEETS=$onlyNumSheets filter" -Level WARN
+            Write-Log "No worksheets matched ONLY_NUM_SHEETS=$onlyNumSheets filter" -Level WARNING
         }
 
         $totalUpdated = 0
@@ -438,7 +481,7 @@ function Invoke-FixCopiedPayrollSheet {
 
         foreach ($sheet in $targetSheets) {
             $sheetLabel = $sheet.Name
-            Write-Log "Processing sheet '$sheetLabel'"
+            Write-Log "Processing sheet '$sheetLabel'" -Level DEBUG
             $sheetUpdated = 0
             $sheetSkipped = 0
 
@@ -446,7 +489,7 @@ function Invoke-FixCopiedPayrollSheet {
                 $refIndex = $group.RefIndex
                 if (-not $refSheetNames.ContainsKey($refIndex)) {
                     $refSheetNames[$refIndex] = Get-RefSheetName -Workbook $workbook -Index $refIndex
-                    Write-Log "Reference sheet index $refIndex name='$($refSheetNames[$refIndex])'"
+                    Write-Log "Reference sheet index $refIndex name='$($refSheetNames[$refIndex])'" -Level DEBUG
                 }
 
                 $result = Update-TargetCellFormulas `
@@ -505,7 +548,7 @@ catch {
 
 Write-Log "Processing $($workbookPaths.Count) workbook(s)"
 if (-not [string]::IsNullOrWhiteSpace($folder_path)) {
-    Write-Log "folder_path=$folder_path recursive=$recursive"
+    Write-Log "folder_path=$folder_path recursive=$recursive" -Level DEBUG
 }
 
 $failures = @()

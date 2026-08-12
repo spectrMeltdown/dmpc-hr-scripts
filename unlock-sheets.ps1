@@ -10,6 +10,7 @@ $recursive = $false
 $sheet_range = @()
 $sheet_password = $null
 $log_path = $null
+$log_level = 'INFO'
 
 function Import-DotEnv {
     param(
@@ -126,6 +127,43 @@ function Initialize-Config {
 
     $script:sheet_password = $env['SHEET_PASSWORD']
     $script:log_path = Resolve-ConfigPath -PathValue $env['LOG_PATH']
+
+    $logLevelValue = if ($env.ContainsKey('LOG_LEVEL')) { $env['LOG_LEVEL'] } else { $null }
+    $script:log_level = Resolve-LogLevel -Value $logLevelValue
+}
+
+function Get-LogLevelRank {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Level
+    )
+
+    switch ($Level.ToUpperInvariant()) {
+        'TRACE' { return 0 }
+        'DEBUG' { return 1 }
+        'INFO' { return 2 }
+        'WARNING' { return 3 }
+        'ERROR' { return 4 }
+        default { return -1 }
+    }
+}
+
+function Resolve-LogLevel {
+    param(
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return 'INFO'
+    }
+
+    $normalized = $Value.Trim().ToUpperInvariant()
+    if ((Get-LogLevelRank -Level $normalized) -lt 0) {
+        Write-Error "LOG_LEVEL must be one of: TRACE, DEBUG, INFO, WARNING, ERROR. Got: $Value"
+        exit 1
+    }
+
+    return $normalized
 }
 
 function Write-Log {
@@ -133,9 +171,14 @@ function Write-Log {
         [Parameter(Mandatory = $true)]
         [string]$Message,
 
-        [ValidateSet('INFO', 'WARN', 'ERROR')]
+        [ValidateSet('TRACE', 'DEBUG', 'INFO', 'WARNING', 'ERROR')]
         [string]$Level = 'INFO'
     )
+
+    $configuredLevel = if ([string]::IsNullOrWhiteSpace($script:log_level)) { 'INFO' } else { $script:log_level }
+    if ((Get-LogLevelRank -Level $Level) -lt (Get-LogLevelRank -Level $configuredLevel)) {
+        return
+    }
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $line = "[$timestamp] $Level  $Message"
@@ -208,7 +251,7 @@ function Invoke-UnlockSheets {
     )
 
     Write-Log "Starting sheet unlock"
-    Write-Log "workbook_path=$WorkbookPath sheet_range=[$($sheet_range[0]), $($sheet_range[1])]"
+    Write-Log "workbook_path=$WorkbookPath sheet_range=[$($sheet_range[0]), $($sheet_range[1])]" -Level DEBUG
 
     $rangeStart = [int]$sheet_range[0]
     $rangeStop = [int]$sheet_range[1]
@@ -249,13 +292,13 @@ function Invoke-UnlockSheets {
             $sheet = Get-WorksheetByName -Workbook $workbook -Name $sheetName
 
             if (-not $sheet) {
-                Write-Log "Sheet '$sheetName' not found, skipped" -Level WARN
+                Write-Log "Sheet '$sheetName' not found, skipped" -Level WARNING
                 $skipped++
                 continue
             }
 
             if (-not $sheet.ProtectContents) {
-                Write-Log "Sheet '$sheetName' not protected, skipped" -Level WARN
+                Write-Log "Sheet '$sheetName' not protected, skipped" -Level WARNING
                 $skipped++
                 continue
             }
@@ -307,7 +350,7 @@ catch {
 
 Write-Log "Processing $($workbookPaths.Count) workbook(s)"
 if (-not [string]::IsNullOrWhiteSpace($folder_path)) {
-    Write-Log "folder_path=$folder_path recursive=$recursive"
+    Write-Log "folder_path=$folder_path recursive=$recursive" -Level DEBUG
 }
 
 $failures = @()
