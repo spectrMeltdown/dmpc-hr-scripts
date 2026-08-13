@@ -64,6 +64,10 @@ Optional:
 | **REF_RUN_DATE** | Optional fixed date `yyyy-MM-dd` used instead of today when calculating the period |
 | **LOG_PATH** | Log file path (e.g. `logs\check-files-cutoff.log`) |
 | **LOG_LEVEL** | Minimum log level: `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default `INFO`). Use `DEBUG` for open-flow / path troubleshooting detail |
+| **SR_PATHS** | Sales report folder map (same `Label=Path` format as **BRANCH_PATHS**; labels must match grouped branch names). Uses **USE_BRANCH_YEAR_MONTH** when enabled |
+| **SR_FILE_EXTENSIONS** | Extensions Open SR searches for (default includes PDF, images, Excel) |
+| **SR_OPEN_MAX** | Maximum sales report files opened per Open SR click (default `10`) |
+| **SHOW_SR_BUTTON** | `true` to show the Open SR button in the popup (default `true`) |
 
 Matching is by **day numbers around a dash** in the filename (e.g. `8-14`, `08-14`, or `29-AUG 5` in `JULY 29-AUG 5`). Month text between the days is ignored and does not need to be spelled correctly. Only top-level `.xlsx` / `.xls` files are checked (Excel lock files starting with `~$` are skipped).
 

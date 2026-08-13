@@ -54,6 +54,26 @@ Assert-True (-not (Test-FilenameContainsDayRange -FileName 'JULY 15-21, 2026.xls
 Assert-True (-not (Test-FilenameContainsDayRange -FileName 'JULY 18-140, 2026.xlsx' -StartDay 8 -EndDay 14)) `
     'Did not expect false-positive on 18-140'
 
+# --- Sales report day-token match ---
+
+$crossMonthDays = @(Get-PayrollPeriodDayNumbers -PeriodStart ([DateTime]'2026-07-29') -PeriodEnd ([DateTime]'2026-08-05'))
+Assert-True ($crossMonthDays.Count -eq 8) "Expected 8 cross-month days, got $($crossMonthDays.Count)"
+Assert-True ($crossMonthDays -contains 29 -and $crossMonthDays -contains 5) 'Cross-month day set should include 29 and 5'
+
+Assert-True (Test-FilenameContainsSalesReportDay -FileName 'SALES REPORT AUG 2 2026.pdf' -PeriodDays @(2)) `
+    'Expected match for space-delimited day 2'
+Assert-True (Test-FilenameContainsSalesReportDay -FileName 'SR-AUG-31-2026.pdf' -PeriodDays @(31)) `
+    'Expected match for dash-delimited day 31'
+Assert-True (Test-FilenameContainsSalesReportDay -FileName 'SR_8_2026.xlsx' -PeriodDays @(8)) `
+    'Expected match for underscore-delimited day 8'
+Assert-True (-not (Test-FilenameContainsSalesReportDay -FileName 'SR_18_2026.pdf' -PeriodDays @(8))) `
+    'Did not expect embedded day 8 in 18'
+Assert-True (-not (Test-FilenameContainsSalesReportDay -FileName 'version12.pdf' -PeriodDays @(2))) `
+    'Did not expect day 2 embedded in version12'
+
+Assert-True (Test-EnvBool -Value 'true' -Default $false) 'SHOW_SR_BUTTON=true should parse as true'
+Assert-True (-not (Test-EnvBool -Value 'false' -Default $true)) 'SHOW_SR_BUTTON=false should parse as false'
+
 # --- BRANCH_PATHS parse ---
 
 $parsed = @(Parse-BranchPaths -Value 'Pandesalan=C:\branch\a;Mindoro=C:\branch\b')
@@ -237,6 +257,33 @@ try {
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# --- SR folder scan ---
+
+$srTempRoot = Join-Path ([IO.Path]::GetTempPath()) ("check-files-sr-tests-" + [guid]::NewGuid().ToString('N'))
+$srBranch = Join-Path $srTempRoot 'SRBranch'
+try {
+    New-Item -ItemType Directory -Path $srBranch -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $srBranch 'SALES REPORT AUG 8 2026.pdf') -Value 'dummy' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $srBranch 'SR_9_2026.jpg') -Value 'dummy' -Encoding UTF8
+    Set-Content -LiteralPath (Join-Path $srBranch 'SR_18_2026.pdf') -Value 'dummy' -Encoding UTF8
+
+    $script:sr_file_extensions = @('.pdf', '.jpg')
+    $script:recursive = $false
+    $periodDays = @(8, 9)
+
+    $srMatches = @(Get-SalesReportFilesInFolder -FolderPath $srBranch -PeriodDays $periodDays)
+    Assert-True ($srMatches.Count -eq 2) "Expected 2 SR matches, got $($srMatches.Count)"
+    Assert-True (@($srMatches | ForEach-Object { $_.Name }) -contains 'SALES REPORT AUG 8 2026.pdf') `
+        'Expected day 8 PDF match'
+    Assert-True (@($srMatches | ForEach-Object { $_.Name }) -contains 'SR_9_2026.jpg') `
+        'Expected day 9 JPG match'
+}
+finally {
+    if (Test-Path -LiteralPath $srTempRoot) {
+        Remove-Item -LiteralPath $srTempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

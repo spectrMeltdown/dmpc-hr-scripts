@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 
 param(
     [string]$EnvPath = (Join-Path $PSScriptRoot ".env"),
@@ -19,6 +19,10 @@ $script:cutoff_file_extensions = @('.xlsx', '.xls')
 $script:recursive = $false
 $script:dir_level_search = 2
 $script:log_level = 'INFO'
+$script:sr_paths = @()
+$script:sr_file_extensions = @('.pdf', '.png', '.jpg', '.jpeg', '.xlsx', '.xls')
+$script:sr_open_max = 10
+$script:show_sr_button = $true
 
 function Import-DotEnv {
     param(
@@ -54,8 +58,8 @@ function Import-DotEnv {
             $value = $value.Substring(1, $value.Length - 2)
         }
 
-        # Repeatable keys (e.g. BRANCH_PATHS on multiple lines) are joined with ';'
-        if ($key -eq 'BRANCH_PATHS' -and $envMap.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace($envMap[$key])) {
+        # Repeatable keys (e.g. BRANCH_PATHS / SR_PATHS on multiple lines) are joined with ';'
+        if ($key -in @('BRANCH_PATHS', 'SR_PATHS') -and $envMap.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace($envMap[$key])) {
             if (-not [string]::IsNullOrWhiteSpace($value)) {
                 $envMap[$key] = $envMap[$key] + ';' + $value
             }
@@ -259,9 +263,12 @@ function Get-BranchPayrollPeriod {
     }
 }
 
-function Parse-BranchPaths {
+function Parse-LabeledPaths {
     param(
-        [string]$Value
+        [string]$Value,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SettingName
     )
 
     $list = [System.Collections.Generic.List[object]]::new()
@@ -279,14 +286,14 @@ function Parse-BranchPaths {
 
         $eqIndex = $part.IndexOf('=')
         if ($eqIndex -lt 1) {
-            throw "Invalid BRANCH_PATHS segment (expected Label=Path): $part"
+            throw "Invalid $SettingName segment (expected Label=Path): $part"
         }
 
         $label = $part.Substring(0, $eqIndex).Trim()
         $pathValue = $part.Substring($eqIndex + 1).Trim()
 
         if ([string]::IsNullOrWhiteSpace($label) -or [string]::IsNullOrWhiteSpace($pathValue)) {
-            throw "Invalid BRANCH_PATHS segment (empty label or path): $part"
+            throw "Invalid $SettingName segment (empty label or path): $part"
         }
 
         $resolved = Resolve-ConfigPath -PathValue $pathValue
@@ -297,6 +304,22 @@ function Parse-BranchPaths {
     }
 
     return @($list.ToArray())
+}
+
+function Parse-BranchPaths {
+    param(
+        [string]$Value
+    )
+
+    return @(Parse-LabeledPaths -Value $Value -SettingName 'BRANCH_PATHS')
+}
+
+function Parse-SrPaths {
+    param(
+        [string]$Value
+    )
+
+    return @(Parse-LabeledPaths -Value $Value -SettingName 'SR_PATHS')
 }
 
 function Get-BranchGroupLabel {
@@ -340,10 +363,13 @@ function Group-BranchPaths {
     return @($list.ToArray())
 }
 
-function Parse-CutoffFileExtensions {
+function Parse-FileExtensions {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Value
+        [string]$Value,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SettingName
     )
 
     $extensions = [System.Collections.Generic.List[string]]::new()
@@ -362,10 +388,28 @@ function Parse-CutoffFileExtensions {
     }
 
     if ($extensions.Count -eq 0) {
-        throw 'CUTOFF_FILE_EXTENSIONS must contain at least one extension'
+        throw "$SettingName must contain at least one extension"
     }
 
     return @($extensions.ToArray())
+}
+
+function Parse-CutoffFileExtensions {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    return @(Parse-FileExtensions -Value $Value -SettingName 'CUTOFF_FILE_EXTENSIONS')
+}
+
+function Parse-SrFileExtensions {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    return @(Parse-FileExtensions -Value $Value -SettingName 'SR_FILE_EXTENSIONS')
 }
 
 function Get-DayRangeMatchPattern {
@@ -394,6 +438,255 @@ function Test-FilenameContainsDayRange {
 
     $pattern = Get-DayRangeMatchPattern -StartDay $StartDay -EndDay $EndDay
     return [bool]($FileName -match $pattern)
+}
+
+function Get-PayrollPeriodDayNumbers {
+    param(
+        [Parameter(Mandatory = $true)]
+        [DateTime]$PeriodStart,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$PeriodEnd
+    )
+
+    $days = [System.Collections.Generic.HashSet[int]]::new()
+    $cursor = $PeriodStart.Date
+    $end = $PeriodEnd.Date
+
+    while ($cursor -le $end) {
+        [void]$days.Add($cursor.Day)
+        $cursor = $cursor.AddDays(1)
+    }
+
+    return @($days.ToArray() | Sort-Object)
+}
+
+function Test-FilenameContainsSalesReportDay {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FileName,
+
+        [Parameter(Mandatory = $true)]
+        [int[]]$PeriodDays
+    )
+
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+    if ([string]::IsNullOrWhiteSpace($stem)) {
+        return $false
+    }
+
+    foreach ($day in $PeriodDays) {
+        if ($day -lt 10) {
+            $dayToken = "0?$day"
+        }
+        else {
+            $dayToken = "$day"
+        }
+
+        $pattern = "(^|[-_\s])$dayToken($|[-_\s])"
+        if ($stem -match $pattern) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-SalesReportFilesInFolder {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FolderPath,
+
+        [Parameter(Mandatory = $true)]
+        [int[]]$PeriodDays
+    )
+
+    $matches = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+
+    if (-not (Test-Path -LiteralPath $FolderPath -PathType Container)) {
+        Write-Log "[open-sr] Scan path missing or not a folder: Path='$FolderPath'" -Level DEBUG
+        return @()
+    }
+
+    $allowedExtensions = $script:sr_file_extensions
+    $childParams = @{
+        LiteralPath = $FolderPath
+        File        = $true
+        ErrorAction = 'Stop'
+    }
+    if ($script:recursive) {
+        $childParams['Recurse'] = $true
+        $childParams['Depth'] = $script:dir_level_search
+    }
+
+    Write-Log ("[open-sr] Scanning path: Path='{0}', PeriodDays='{1}', Recursive={2}, Depth={3}, Extensions='{4}'" -f `
+            $FolderPath, ($PeriodDays -join ','), $script:recursive, $script:dir_level_search, ($allowedExtensions -join ',')) -Level DEBUG
+
+    $files = @(Get-ChildItem @childParams |
+        Where-Object {
+            -not $_.Name.StartsWith('~$') -and
+            ($allowedExtensions -icontains $_.Extension)
+        })
+
+    Write-Log ("[open-sr] Candidate files found: Path='{0}', Count={1}" -f $FolderPath, $files.Count) -Level DEBUG
+
+    foreach ($file in $files) {
+        if (Test-FilenameContainsSalesReportDay -FileName $file.Name -PeriodDays $PeriodDays) {
+            Write-Log ("[open-sr] Matched sales report file: Path='{0}', File='{1}'" -f $FolderPath, $file.FullName) -Level DEBUG
+            $matches.Add($file)
+        }
+    }
+
+    return @($matches.ToArray())
+}
+
+function Get-SrBranchGroupByLabel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BranchLabel
+    )
+
+    foreach ($branch in $script:sr_paths) {
+        if ($branch.Label -eq $BranchLabel) {
+            return $branch
+        }
+    }
+
+    return $null
+}
+
+function Find-BranchSalesReportFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BranchLabel,
+
+        [Parameter(Mandatory = $true)]
+        [int[]]$PeriodDays
+    )
+
+    $branch = Get-SrBranchGroupByLabel -BranchLabel $BranchLabel
+    if (-not $branch) {
+        Write-Log ("[open-sr] No SR paths configured for branch: Label='{0}'" -f $BranchLabel) -Level DEBUG
+        return @()
+    }
+
+    [string[]]$paths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
+        @($branch.Paths)
+    }
+    else {
+        @($branch.Path)
+    }
+
+    Write-Log ("[open-sr] Finding sales report files: Label='{0}', PathCount={1}, Paths='{2}'" -f `
+            $BranchLabel, $paths.Count, ($paths -join "'; '")) -Level DEBUG
+
+    $allMatches = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+    foreach ($folderPath in $paths) {
+        try {
+            $folderMatches = @(Get-SalesReportFilesInFolder -FolderPath $folderPath -PeriodDays $PeriodDays)
+            foreach ($match in $folderMatches) {
+                $allMatches.Add($match)
+            }
+        }
+        catch {
+            Write-Log ("[open-sr] Scan error: Label='{0}', Path='{1}', Message='{2}'" -f `
+                    $BranchLabel, $folderPath, $_.Exception.Message) -Level ERROR
+        }
+    }
+
+    return @($allMatches.ToArray())
+}
+
+function Get-CurrentPayrollPeriod {
+    $referenceDate = if ($script:ref_run_date) { $script:ref_run_date } else { [DateTime]::Today }
+
+    return Get-BranchPayrollPeriod `
+        -StartDay $script:branch_payroll_start_day `
+        -EndDay $script:branch_payroll_end_day `
+        -TargetPeriod $script:payroll_target_period `
+        -ReferenceDate $referenceDate
+}
+
+function Open-BranchSalesReports {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BranchLabel
+    )
+
+    Write-Log ("[open-sr] Open requested: Label='{0}'" -f $BranchLabel) -Level DEBUG
+
+    if ($script:sr_paths.Count -eq 0) {
+        Write-Log "[open-sr] No SR paths configured in environment" -Level WARNING
+        [System.Windows.Forms.MessageBox]::Show(
+            'No SR paths are configured. Add SR_PATHS entries to your .env file.',
+            'Open SR',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        return
+    }
+
+    $branch = Get-SrBranchGroupByLabel -BranchLabel $BranchLabel
+    if (-not $branch) {
+        Write-Log ("[open-sr] No SR path mapping for branch: Label='{0}'" -f $BranchLabel) -Level WARNING
+        [System.Windows.Forms.MessageBox]::Show(
+            "No SR path is configured for branch '$BranchLabel'.`nEnsure SR_PATHS uses the same label as BRANCH_PATHS.",
+            'Open SR',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        return
+    }
+
+    $period = Get-CurrentPayrollPeriod
+    $periodDays = @(Get-PayrollPeriodDayNumbers -PeriodStart $period.Start -PeriodEnd $period.End)
+    Write-Log ("[open-sr] Period days for matching: Label='{0}', Days='{1}', Period='{2:yyyy-MM-dd}' to '{3:yyyy-MM-dd}'" -f `
+            $BranchLabel, ($periodDays -join ','), $period.Start, $period.End) -Level DEBUG
+
+    $matchedFiles = @(Find-BranchSalesReportFiles -BranchLabel $BranchLabel -PeriodDays $periodDays)
+    if ($matchedFiles.Count -eq 0) {
+        Write-Log ("[open-sr] No matching sales report files: Label='{0}', Days='{1}'" -f `
+                $BranchLabel, ($periodDays -join ',')) -Level WARNING
+        [System.Windows.Forms.MessageBox]::Show(
+            "No sales report files found for '$BranchLabel' matching payroll days $($periodDays -join ', ').",
+            'Open SR',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        return
+    }
+
+    $filesToOpen = @($matchedFiles | Select-Object -First $script:sr_open_max)
+    $truncated = $matchedFiles.Count -gt $filesToOpen.Count
+
+    if ($truncated) {
+        Write-Log ("[open-sr] Match count exceeds SR_OPEN_MAX: Label='{0}', Total={1}, Opening={2}, Max={3}" -f `
+                $BranchLabel, $matchedFiles.Count, $filesToOpen.Count, $script:sr_open_max) -Level WARNING
+        [System.Windows.Forms.MessageBox]::Show(
+            ("Opened {0} of {1} matching files for '{2}'.`nIncrease SR_OPEN_MAX to open more." -f `
+                    $filesToOpen.Count, $matchedFiles.Count, $BranchLabel),
+            'Open SR',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+    }
+
+    $openedCount = 0
+    foreach ($file in $filesToOpen) {
+        try {
+            Write-Log ("[open-sr] Launching file: Label='{0}', File='{1}'" -f $BranchLabel, $file.FullName) -Level DEBUG
+            Start-Process -FilePath $file.FullName -ErrorAction Stop
+            $openedCount++
+        }
+        catch {
+            $message = $_.Exception.Message
+            Write-Log ("[open-sr] Could not open file (missing handler or shell launch error): Label='{0}', File='{1}', Message='{2}'" -f `
+                    $BranchLabel, $file.FullName, $message) -Level ERROR
+        }
+    }
+
+    Write-Log ("[open-sr] Open completed: Label='{0}', Opened={1}, TotalMatches={2}, Truncated={3}" -f `
+            $BranchLabel, $openedCount, $matchedFiles.Count, $truncated) -Level INFO
 }
 
 function Test-BranchHasCutoffFile {
@@ -651,16 +944,24 @@ function Show-CutoffFilesPopup {
     }
 
     $margin = 16
-    $formWidth = 520
+    $showSrButton = [bool]$script:show_sr_button
+    $formWidth = if ($showSrButton) { 680 } else { 520 }
     $contentWidth = $formWidth - (2 * $margin)
     $buttonHeight = 28
     $buttonWidth = 86
     $buttonGap = 12
     $rowHeight = 30
     $rowGap = 2
-    $openButtonWidth = 56
+    $incentivesButtonWidth = 100
+    $srButtonWidth = 70
     $openButtonHeight = 26
     $openButtonGap = 8
+    $rowButtonsWidth = if ($showSrButton) {
+        $incentivesButtonWidth + $openButtonGap + $srButtonWidth
+    }
+    else {
+        $incentivesButtonWidth
+    }
     $minContentHeight = 80
 
     $font = New-Object System.Drawing.Font('Consolas', 11)
@@ -719,7 +1020,7 @@ function Show-CutoffFilesPopup {
         $rowInnerWidth = [Math]::Max(120, $listPanel.ClientSize.Width - $scrollPad)
         $labelWidth = [Math]::Max(
             40,
-            $rowInnerWidth - $openButtonWidth - $openButtonGap
+            $rowInnerWidth - $rowButtonsWidth - $openButtonGap
         )
         $labelHeight = [Math]::Max($font.Height + 2, 18)
 
@@ -750,29 +1051,50 @@ function Show-CutoffFilesPopup {
             $statusLabel.Size = New-Object System.Drawing.Size($labelWidth, $labelHeight)
             $statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 
-            $openButton = New-Object System.Windows.Forms.Button
-            $openButton.Text = 'Open'
-            $openButton.Size = New-Object System.Drawing.Size($openButtonWidth, $openButtonHeight)
-            $openButton.Location = New-Object System.Drawing.Point(
-                ($rowInnerWidth - $openButtonWidth),
+            $incentivesButton = New-Object System.Windows.Forms.Button
+            $incentivesButton.Text = 'Open Incentives'
+            $incentivesButton.Size = New-Object System.Drawing.Size($incentivesButtonWidth, $openButtonHeight)
+            $incentivesButton.Location = New-Object System.Drawing.Point(
+                ($rowInnerWidth - $rowButtonsWidth),
                 [Math]::Floor(($rowHeight - $openButtonHeight) / 2)
             )
-            $openButton.Tag = [pscustomobject]@{
+            $incentivesButton.Tag = [pscustomobject]@{
                 Label       = $item.Label
                 Path        = $item.Path
                 HasFile     = $item.HasFile
                 PathResults = $item.PathResults
             }
-            $openButton.Add_Click({
+            $incentivesButton.Add_Click({
                 param($sender, $eventArgs)
                 $tag = $sender.Tag
-                Write-Log ("[open-flow] Open button clicked: Label='{0}', Path='{1}', HasFile={2}" -f `
+                Write-Log ("[open-flow] Open Incentives clicked: Label='{0}', Path='{1}', HasFile={2}" -f `
                         $tag.Label, $tag.Path, $tag.HasFile) -Level DEBUG
                 Open-CutoffFolderInExplorer -FolderPath ([string]$tag.Path) -BranchLabel ([string]$tag.Label)
             })
 
             $rowPanel.Controls.Add($statusLabel)
-            $rowPanel.Controls.Add($openButton)
+            $rowPanel.Controls.Add($incentivesButton)
+
+            if ($showSrButton) {
+                $srButton = New-Object System.Windows.Forms.Button
+                $srButton.Text = 'Open SR'
+                $srButton.Size = New-Object System.Drawing.Size($srButtonWidth, $openButtonHeight)
+                $srButton.Location = New-Object System.Drawing.Point(
+                    ($rowInnerWidth - $srButtonWidth),
+                    [Math]::Floor(($rowHeight - $openButtonHeight) / 2)
+                )
+                $srButton.Tag = [pscustomobject]@{
+                    Label = $item.Label
+                }
+                $srButton.Add_Click({
+                    param($sender, $eventArgs)
+                    $tag = $sender.Tag
+                    Write-Log ("[open-sr] Open SR clicked: Label='{0}'" -f $tag.Label) -Level DEBUG
+                    Open-BranchSalesReports -BranchLabel ([string]$tag.Label)
+                })
+                $rowPanel.Controls.Add($srButton)
+            }
+
             $listPanel.Controls.Add($rowPanel)
             $y += ($rowHeight + $rowGap)
         }
@@ -994,8 +1316,64 @@ function Initialize-Config {
         $script:dir_level_search = $parsedDepth
     }
 
-    Write-Log ("[open-flow] Config scan options: RefreshIntervalSeconds={0}, Recursive={1}, Depth={2}, Extensions='{3}'" -f `
-            $script:refresh_interval_seconds, $script:recursive, $script:dir_level_search, ($script:cutoff_file_extensions -join ',')) -Level DEBUG
+    $showSrButtonValue = if ($envMap.ContainsKey('SHOW_SR_BUTTON')) { $envMap['SHOW_SR_BUTTON'] } else { $null }
+    $script:show_sr_button = Test-EnvBool -Value $showSrButtonValue -Default $true
+
+    $script:sr_open_max = 10
+    if ($envMap.ContainsKey('SR_OPEN_MAX') -and -not [string]::IsNullOrWhiteSpace($envMap['SR_OPEN_MAX'])) {
+        $parsedSrOpenMax = 0
+        if (-not [int]::TryParse($envMap['SR_OPEN_MAX'].Trim(), [ref]$parsedSrOpenMax) -or $parsedSrOpenMax -lt 1) {
+            Write-Error 'SR_OPEN_MAX must be a positive integer'
+            exit 1
+        }
+        $script:sr_open_max = $parsedSrOpenMax
+    }
+
+    if ($envMap.ContainsKey('SR_FILE_EXTENSIONS') -and -not [string]::IsNullOrWhiteSpace($envMap['SR_FILE_EXTENSIONS'])) {
+        try {
+            $script:sr_file_extensions = @(Parse-SrFileExtensions -Value $envMap['SR_FILE_EXTENSIONS'])
+        }
+        catch {
+            Write-Error $_.Exception.Message
+            exit 1
+        }
+    }
+
+    $script:sr_paths = @()
+    if ($envMap.ContainsKey('SR_PATHS') -and -not [string]::IsNullOrWhiteSpace($envMap['SR_PATHS'])) {
+        try {
+            $script:sr_paths = @(Parse-SrPaths -Value $envMap['SR_PATHS'])
+            Write-Log ("[open-sr] Parsed SR paths: Count={0}" -f $script:sr_paths.Count) -Level DEBUG
+        }
+        catch {
+            Write-Error $_.Exception.Message
+            exit 1
+        }
+
+        if ($script:use_branch_year_month) {
+            $script:sr_paths = @(
+                foreach ($branch in $script:sr_paths) {
+                    [pscustomobject]@{
+                        Label = $branch.Label
+                        Path  = Resolve-BranchFolderPath `
+                            -BasePath $branch.Path `
+                            -UseBranchYearMonth $true `
+                            -BranchYear $script:branch_year `
+                            -BranchMonth $script:branch_month
+                    }
+                }
+            )
+            Write-Log ("[open-sr] Applied SR year/month suffix: Year='{0}', Month='{1}', Count={2}" -f `
+                    $script:branch_year, $script:branch_month, $script:sr_paths.Count) -Level DEBUG
+        }
+
+        $script:sr_paths = @(Group-BranchPaths -BranchPaths $script:sr_paths)
+        Write-Log ("[open-sr] Grouped SR paths: Count={0}" -f $script:sr_paths.Count) -Level DEBUG
+    }
+
+    Write-Log ("[open-flow] Config scan options: RefreshIntervalSeconds={0}, Recursive={1}, Depth={2}, Extensions='{3}', ShowSrButton={4}, SrOpenMax={5}, SrExtensions='{6}', SrPathCount={7}" -f `
+            $script:refresh_interval_seconds, $script:recursive, $script:dir_level_search, ($script:cutoff_file_extensions -join ','), `
+            $script:show_sr_button, $script:sr_open_max, ($script:sr_file_extensions -join ','), $script:sr_paths.Count) -Level DEBUG
 }
 
 function Get-CutoffFilesCheckDisplay {
