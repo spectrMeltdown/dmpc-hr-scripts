@@ -225,8 +225,8 @@ function Resolve-SrBranchFolderPath {
 
     $monthPattern = '^0?' + $monthNumber + '(?:\D|$)'
     $matchedFolder = Get-ChildItem -LiteralPath $yearPath -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match $monthPattern } |
-        Select-Object -First 1
+    Where-Object { $_.Name -match $monthPattern } |
+    Select-Object -First 1
 
     if ($matchedFolder) {
         Write-Log ("[open-sr] Resolved SR month folder: BranchMonth='{0}', MonthNumber={1}, Path='{2}'" -f `
@@ -297,7 +297,7 @@ function Get-BranchPayrollPeriod {
         while ($end.DayOfWeek -ne $endDow) {
             $end = $end.AddDays(-1)
         }
-        $start = $end.AddDays(-($spanDays - 1))
+        $start = $end.AddDays( - ($spanDays - 1))
     }
     elseif ($period -eq 'previous') {
         $end = $ref
@@ -305,7 +305,7 @@ function Get-BranchPayrollPeriod {
             $end = $end.AddDays(-1)
         }
         $end = $end.AddDays(-$spanDays)
-        $start = $end.AddDays(-($spanDays - 1))
+        $start = $end.AddDays( - ($spanDays - 1))
     }
     elseif ($period -eq 'next') {
         $start = $ref
@@ -740,7 +740,7 @@ function Open-BranchSalesReports {
                 $BranchLabel, $matchedFiles.Count, $filesToOpen.Count, $script:sr_open_max) -Level WARNING
         Show-CutoffMessageBox `
             -Text ("Opened {0} of {1} matching files for '{2}'.`nIncrease SR_OPEN_MAX to open more." -f `
-                    $filesToOpen.Count, $matchedFiles.Count, $BranchLabel) `
+                $filesToOpen.Count, $matchedFiles.Count, $BranchLabel) `
             -Caption 'Open SR' `
             -Icon ([System.Windows.Forms.MessageBoxIcon]::Information)
     }
@@ -1148,7 +1148,7 @@ function Show-CutoffFilesPopup {
             $statusLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
 
             $incentivesButton = New-Object System.Windows.Forms.Button
-            $incentivesButton.Text = 'Open Incentives'
+            $incentivesButton.Text = 'Open'
             $incentivesButton.Size = New-Object System.Drawing.Size($incentivesButtonWidth, $openButtonHeight)
             $incentivesButton.Location = New-Object System.Drawing.Point(
                 ($rowInnerWidth - $rowButtonsWidth),
@@ -1161,12 +1161,12 @@ function Show-CutoffFilesPopup {
                 PathResults = $item.PathResults
             }
             $incentivesButton.Add_Click({
-                param($sender, $eventArgs)
-                $tag = $sender.Tag
-                Write-Log ("[open-flow] Open Incentives clicked: Label='{0}', Path='{1}', HasFile={2}" -f `
-                        $tag.Label, $tag.Path, $tag.HasFile) -Level DEBUG
-                Open-CutoffFolderInExplorer -FolderPath ([string]$tag.Path) -BranchLabel ([string]$tag.Label)
-            })
+                    param($sender, $eventArgs)
+                    $tag = $sender.Tag
+                    Write-Log ("[open-flow] Open Incentives clicked: Label='{0}', Path='{1}', HasFile={2}" -f `
+                            $tag.Label, $tag.Path, $tag.HasFile) -Level DEBUG
+                    Open-CutoffFolderInExplorer -FolderPath ([string]$tag.Path) -BranchLabel ([string]$tag.Label)
+                })
 
             $rowPanel.Controls.Add($statusLabel)
             $rowPanel.Controls.Add($incentivesButton)
@@ -1183,11 +1183,11 @@ function Show-CutoffFilesPopup {
                     Label = $item.Label
                 }
                 $srButton.Add_Click({
-                    param($sender, $eventArgs)
-                    $tag = $sender.Tag
-                    Write-Log ("[open-sr] Open SR clicked: Label='{0}'" -f $tag.Label) -Level DEBUG
-                    Open-BranchSalesReports -BranchLabel ([string]$tag.Label)
-                })
+                        param($sender, $eventArgs)
+                        $tag = $sender.Tag
+                        Write-Log ("[open-sr] Open SR clicked: Label='{0}'" -f $tag.Label) -Level DEBUG
+                        Open-BranchSalesReports -BranchLabel ([string]$tag.Label)
+                    })
                 $rowPanel.Controls.Add($srButton)
             }
 
@@ -1211,26 +1211,26 @@ function Show-CutoffFilesPopup {
         $timer = New-Object System.Windows.Forms.Timer
         $timer.Interval = $RefreshIntervalSeconds * 1000
         $timer.Add_Tick({
-            try {
-                $display = & $refreshCallback
-                if ($display) {
-                    if (Test-CutoffFilesDisplayChanged -Previous $previousDisplay -Current $display) {
-                        Invoke-CutoffFilesChangeAlert
-                    }
-                    $previousDisplay = $display
-                    & $rebuildRows -RowResults ([object[]]@($display.Results))
-                    $form.Text = if ($display.Title -match '\(updated ') {
-                        $display.Title
-                    }
-                    else {
-                        "$($display.Title) (updated $(Get-Date -Format 'HH:mm:ss'))"
+                try {
+                    $display = & $refreshCallback
+                    if ($display) {
+                        if (Test-CutoffFilesDisplayChanged -Previous $previousDisplay -Current $display) {
+                            Invoke-CutoffFilesChangeAlert
+                        }
+                        $previousDisplay = $display
+                        & $rebuildRows -RowResults ([object[]]@($display.Results))
+                        $form.Text = if ($display.Title -match '\(updated ') {
+                            $display.Title
+                        }
+                        else {
+                            "$($display.Title) (updated $(Get-Date -Format 'HH:mm:ss'))"
+                        }
                     }
                 }
-            }
-            catch {
-                Write-Host "Refresh failed: $($_.Exception.Message)"
-            }
-        })
+                catch {
+                    Write-Host "Refresh failed: $($_.Exception.Message)"
+                }
+            })
         $timer.Start()
     }
 
@@ -1496,9 +1496,9 @@ function Get-CutoffFilesCheckDisplay {
         -StartDay $startDay `
         -EndDay $endDay `
         -OnError {
-            param($branch, $message)
-            Write-Log "Cannot scan '$($branch.Label)' ($($branch.Path)): $message" -Level ERROR
-        }
+        param($branch, $message)
+        Write-Log "Cannot scan '$($branch.Label)' ($($branch.Path)): $message" -Level ERROR
+    }
 
     $checklist = Format-CutoffFilesChecklist -Results $branches_with_cutoff_files
     $title = 'Cutoff files check - {0} ({1:yyyy-MM-dd} to {2:yyyy-MM-dd})' -f `
@@ -1576,10 +1576,10 @@ if (-not $isDotSourced) {
         Show-CutoffFilesPopup -Title $display.Title -Results $display.Results -Body $display.Body `
             -RefreshIntervalSeconds $script:refresh_interval_seconds `
             -OnRefresh {
-                Initialize-Config -Path $envPathForRefresh
-                $refreshed = Get-CutoffFilesCheckDisplay
-                Write-CutoffFilesCheckLog -Display $refreshed
-                return $refreshed
-            }
+            Initialize-Config -Path $envPathForRefresh
+            $refreshed = Get-CutoffFilesCheckDisplay
+            Write-CutoffFilesCheckLog -Display $refreshed
+            return $refreshed
+        }
     }
 }
