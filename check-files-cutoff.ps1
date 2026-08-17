@@ -23,6 +23,7 @@ $script:sr_paths = @()
 $script:sr_file_extensions = @('.pdf', '.png', '.jpg', '.jpeg', '.xlsx', '.xls')
 $script:sr_open_max = 10
 $script:show_sr_button = $true
+$script:cutoffPopupForm = $null
 
 function Import-DotEnv {
     param(
@@ -173,6 +174,69 @@ function Resolve-BranchFolderPath {
 
     Assert-BranchYearMonthConfig -UseBranchYearMonth $true -BranchYear $BranchYear -BranchMonth $BranchMonth
     return (Join-Path (Join-Path $BasePath $BranchYear.Trim()) $BranchMonth.Trim())
+}
+
+function Get-BranchMonthNumber {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BranchMonth
+    )
+
+    if ($BranchMonth -match '^\s*0*(\d{1,2})') {
+        return [int]$Matches[1]
+    }
+
+    return $null
+}
+
+function Resolve-SrBranchFolderPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+
+        [bool]$UseBranchYearMonth = $false,
+
+        [string]$BranchYear,
+
+        [string]$BranchMonth
+    )
+
+    if (-not $UseBranchYearMonth) {
+        return $BasePath
+    }
+
+    Assert-BranchYearMonthConfig -UseBranchYearMonth $true -BranchYear $BranchYear -BranchMonth $BranchMonth
+
+    $yearPath = Join-Path $BasePath $BranchYear.Trim()
+    $fallbackPath = Join-Path $yearPath $BranchMonth.Trim()
+    $monthNumber = Get-BranchMonthNumber -BranchMonth $BranchMonth
+
+    if ($null -eq $monthNumber) {
+        Write-Log ("[open-sr] Could not parse month number from BRANCH_MONTH='{0}'; using literal folder '{1}'" -f `
+                $BranchMonth, $fallbackPath) -Level WARNING
+        return $fallbackPath
+    }
+
+    if (-not (Test-Path -LiteralPath $yearPath -PathType Container)) {
+        Write-Log ("[open-sr] SR year folder missing: Path='{0}'; falling back to '{1}'" -f `
+                $yearPath, $fallbackPath) -Level WARNING
+        return $fallbackPath
+    }
+
+    $monthPattern = '^0?' + $monthNumber + '(?:\D|$)'
+    $matchedFolder = Get-ChildItem -LiteralPath $yearPath -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match $monthPattern } |
+        Select-Object -First 1
+
+    if ($matchedFolder) {
+        Write-Log ("[open-sr] Resolved SR month folder: BranchMonth='{0}', MonthNumber={1}, Path='{2}'" -f `
+                $BranchMonth, $monthNumber, $matchedFolder.FullName) -Level DEBUG
+        return $matchedFolder.FullName
+    }
+
+    Write-Log ("[open-sr] No SR month folder matching month {0} under '{1}'; falling back to '{2}'" -f `
+            $monthNumber, $yearPath, $fallbackPath) -Level WARNING
+    return $fallbackPath
 }
 
 function ConvertTo-DayOfWeekEnum {
@@ -458,7 +522,8 @@ function Get-PayrollPeriodDayNumbers {
         $cursor = $cursor.AddDays(1)
     }
 
-    return @($days.ToArray() | Sort-Object)
+    # PowerShell 5.1 HashSet[T] has no LINQ ToArray(); enumerate instead.
+    return @($days | Sort-Object)
 }
 
 function Test-FilenameContainsSalesReportDay {
@@ -617,29 +682,43 @@ function Open-BranchSalesReports {
 
     if ($script:sr_paths.Count -eq 0) {
         Write-Log "[open-sr] No SR paths configured in environment" -Level WARNING
-        [System.Windows.Forms.MessageBox]::Show(
-            'No SR paths are configured. Add SR_PATHS entries to your .env file.',
-            'Open SR',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        ) | Out-Null
+        Show-CutoffMessageBox `
+            -Text 'No SR paths are configured. Add SR_PATHS entries to your .env file.' `
+            -Caption 'Open SR'
         return
     }
 
     $branch = Get-SrBranchGroupByLabel -BranchLabel $BranchLabel
     if (-not $branch) {
         Write-Log ("[open-sr] No SR path mapping for branch: Label='{0}'" -f $BranchLabel) -Level WARNING
-        [System.Windows.Forms.MessageBox]::Show(
-            "No SR path is configured for branch '$BranchLabel'.`nEnsure SR_PATHS uses the same label as BRANCH_PATHS.",
-            'Open SR',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        ) | Out-Null
+        Show-CutoffMessageBox `
+            -Text "No SR path is configured for branch '$BranchLabel'.`nEnsure SR_PATHS uses the same label as BRANCH_PATHS." `
+            -Caption 'Open SR'
         return
     }
 
     $period = Get-CurrentPayrollPeriod
-    $periodDays = @(Get-PayrollPeriodDayNumbers -PeriodStart $period.Start -PeriodEnd $period.End)
+    try {
+        $periodDays = @(Get-PayrollPeriodDayNumbers -PeriodStart $period.Start -PeriodEnd $period.End)
+    }
+    catch {
+        Write-Log ("[open-sr] Failed to build period day list: Label='{0}', Period='{1:yyyy-MM-dd}' to '{2:yyyy-MM-dd}', Message='{3}'" -f `
+                $BranchLabel, $period.Start, $period.End, $_.Exception.Message) -Level ERROR
+        Show-CutoffMessageBox `
+            -Text "Could not determine payroll days for '$BranchLabel'.`n$($_.Exception.Message)" `
+            -Caption 'Open SR'
+        return
+    }
+
+    if ($periodDays.Count -eq 0) {
+        Write-Log ("[open-sr] Period day list unexpectedly empty: Label='{0}', Period='{1:yyyy-MM-dd}' to '{2:yyyy-MM-dd}'" -f `
+                $BranchLabel, $period.Start, $period.End) -Level ERROR
+        Show-CutoffMessageBox `
+            -Text "Could not determine payroll days for '$BranchLabel' (empty day list)." `
+            -Caption 'Open SR'
+        return
+    }
+
     Write-Log ("[open-sr] Period days for matching: Label='{0}', Days='{1}', Period='{2:yyyy-MM-dd}' to '{3:yyyy-MM-dd}'" -f `
             $BranchLabel, ($periodDays -join ','), $period.Start, $period.End) -Level DEBUG
 
@@ -647,12 +726,9 @@ function Open-BranchSalesReports {
     if ($matchedFiles.Count -eq 0) {
         Write-Log ("[open-sr] No matching sales report files: Label='{0}', Days='{1}'" -f `
                 $BranchLabel, ($periodDays -join ',')) -Level WARNING
-        [System.Windows.Forms.MessageBox]::Show(
-            "No sales report files found for '$BranchLabel' matching payroll days $($periodDays -join ', ').",
-            'Open SR',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        ) | Out-Null
+        Show-CutoffMessageBox `
+            -Text "No sales report files found for '$BranchLabel' matching payroll days $($periodDays -join ', ')." `
+            -Caption 'Open SR'
         return
     }
 
@@ -662,13 +738,11 @@ function Open-BranchSalesReports {
     if ($truncated) {
         Write-Log ("[open-sr] Match count exceeds SR_OPEN_MAX: Label='{0}', Total={1}, Opening={2}, Max={3}" -f `
                 $BranchLabel, $matchedFiles.Count, $filesToOpen.Count, $script:sr_open_max) -Level WARNING
-        [System.Windows.Forms.MessageBox]::Show(
-            ("Opened {0} of {1} matching files for '{2}'.`nIncrease SR_OPEN_MAX to open more." -f `
-                    $filesToOpen.Count, $matchedFiles.Count, $BranchLabel),
-            'Open SR',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        ) | Out-Null
+        Show-CutoffMessageBox `
+            -Text ("Opened {0} of {1} matching files for '{2}'.`nIncrease SR_OPEN_MAX to open more." -f `
+                    $filesToOpen.Count, $matchedFiles.Count, $BranchLabel) `
+            -Caption 'Open SR' `
+            -Icon ([System.Windows.Forms.MessageBoxIcon]::Information)
     }
 
     $openedCount = 0
@@ -868,6 +942,35 @@ function Get-ExplorerFolderPathArgument {
     return '"' + $resolvedPath + '"'
 }
 
+function Show-CutoffMessageBox {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Text,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Caption,
+
+        $Buttons = $null,
+
+        $Icon = $null
+    )
+
+    if ($null -eq $Buttons) {
+        $Buttons = [System.Windows.Forms.MessageBoxButtons]::OK
+    }
+    if ($null -eq $Icon) {
+        $Icon = [System.Windows.Forms.MessageBoxIcon]::Warning
+    }
+
+    $owner = $script:cutoffPopupForm
+    if ($owner -and -not $owner.IsDisposed) {
+        [void][System.Windows.Forms.MessageBox]::Show($owner, $Text, $Caption, $Buttons, $Icon)
+    }
+    else {
+        [void][System.Windows.Forms.MessageBox]::Show($Text, $Caption, $Buttons, $Icon)
+    }
+}
+
 function Open-CutoffFolderInExplorer {
     param(
         [string]$FolderPath,
@@ -879,12 +982,9 @@ function Open-CutoffFolderInExplorer {
 
     if ([string]::IsNullOrWhiteSpace($FolderPath)) {
         Write-Log ("[open-flow] Open blocked: Label='{0}', Reason='blank path'" -f $BranchLabel) -Level DEBUG
-        [System.Windows.Forms.MessageBox]::Show(
-            'No folder path is configured for this branch.',
-            'Open folder',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        ) | Out-Null
+        Show-CutoffMessageBox `
+            -Text 'No folder path is configured for this branch.' `
+            -Caption 'Open folder'
         return
     }
 
@@ -893,12 +993,9 @@ function Open-CutoffFolderInExplorer {
 
     if (-not $pathExists) {
         Write-Log ("[open-flow] Open blocked: Label='{0}', Reason='folder not found', InputPath='{1}'" -f $BranchLabel, $FolderPath) -Level DEBUG
-        [System.Windows.Forms.MessageBox]::Show(
-            "Folder not found:`n$FolderPath",
-            'Open folder',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        ) | Out-Null
+        Show-CutoffMessageBox `
+            -Text "Folder not found:`n$FolderPath" `
+            -Caption 'Open folder'
         return
     }
 
@@ -912,12 +1009,9 @@ function Open-CutoffFolderInExplorer {
     catch {
         Write-Log ("[open-flow] Explorer launch failed: Label='{0}', InputPath='{1}', Message='{2}'" -f `
                 $BranchLabel, $FolderPath, $_.Exception.Message) -Level DEBUG
-        [System.Windows.Forms.MessageBox]::Show(
-            "Could not open folder:`n$FolderPath`n`n$($_.Exception.Message)",
-            'Open folder',
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        ) | Out-Null
+        Show-CutoffMessageBox `
+            -Text "Could not open folder:`n$FolderPath`n`n$($_.Exception.Message)" `
+            -Caption 'Open folder'
     }
 }
 
@@ -987,10 +1081,12 @@ function Show-CutoffFilesPopup {
     $form.MaximizeBox = $false
     $form.MinimizeBox = $false
     $form.ShowInTaskbar = $true
+    $form.TopMost = $true
     $form.ClientSize = New-Object System.Drawing.Size(
         $formWidth,
         ((2 * $margin) + $contentHeight + $buttonGap + $buttonHeight)
     )
+    $script:cutoffPopupForm = $form
 
     $listPanel = New-Object System.Windows.Forms.Panel
     $listPanel.Location = New-Object System.Drawing.Point($margin, $margin)
@@ -1143,6 +1239,7 @@ function Show-CutoffFilesPopup {
         $timer.Stop()
         $timer.Dispose()
     }
+    $script:cutoffPopupForm = $null
     $form.Dispose()
     $font.Dispose()
 }
@@ -1355,7 +1452,7 @@ function Initialize-Config {
                 foreach ($branch in $script:sr_paths) {
                     [pscustomobject]@{
                         Label = $branch.Label
-                        Path  = Resolve-BranchFolderPath `
+                        Path  = Resolve-SrBranchFolderPath `
                             -BasePath $branch.Path `
                             -UseBranchYearMonth $true `
                             -BranchYear $script:branch_year `
@@ -1363,8 +1460,11 @@ function Initialize-Config {
                     }
                 }
             )
-            Write-Log ("[open-sr] Applied SR year/month suffix: Year='{0}', Month='{1}', Count={2}" -f `
+            Write-Log ("[open-sr] Applied SR year/month resolution: Year='{0}', Month='{1}', Count={2}" -f `
                     $script:branch_year, $script:branch_month, $script:sr_paths.Count) -Level DEBUG
+            foreach ($branch in $script:sr_paths) {
+                Write-Log ("[open-sr] Resolved SR path: Label='{0}', Path='{1}'" -f $branch.Label, $branch.Path) -Level DEBUG
+            }
         }
 
         $script:sr_paths = @(Group-BranchPaths -BranchPaths $script:sr_paths)
