@@ -1077,9 +1077,9 @@ function Show-CutoffFilesPopup {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = $Title
     $form.StartPosition = 'CenterScreen'
-    $form.FormBorderStyle = 'FixedDialog'
+    $form.FormBorderStyle = 'FixedSingle'
     $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
+    $form.MinimizeBox = $true
     $form.ShowInTaskbar = $true
     $form.TopMost = $true
     $form.ClientSize = New-Object System.Drawing.Size(
