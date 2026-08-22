@@ -548,7 +548,7 @@ function Test-FilenameContainsSalesReportDay {
             $dayToken = "$day"
         }
 
-        $pattern = "(^|[-_\s])$dayToken($|[-_\s])"
+        $pattern = "(^|[-_\s.,])$dayToken($|[-_\s.,])"
         if ($stem -match $pattern) {
             return $true
         }
