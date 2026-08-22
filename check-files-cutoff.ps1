@@ -1081,7 +1081,7 @@ function Show-CutoffFilesPopup {
     $form.MaximizeBox = $false
     $form.MinimizeBox = $true
     $form.ShowInTaskbar = $true
-    $form.TopMost = $true
+    $form.TopMost = $false
     $form.ClientSize = New-Object System.Drawing.Size(
         $formWidth,
         ((2 * $margin) + $contentHeight + $buttonGap + $buttonHeight)
