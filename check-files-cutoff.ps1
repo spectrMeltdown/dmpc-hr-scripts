@@ -1086,21 +1086,73 @@ function Get-BranchesWithCutoffFiles {
         [Parameter(Mandatory = $true)]
         [int]$EndDay,
 
+        [DateTime]$PeriodStart,
+
+        [DateTime]$PeriodEnd,
+
         [scriptblock]$OnError
     )
+
+    $hasPeriod = $PSBoundParameters.ContainsKey('PeriodStart') -and $PSBoundParameters.ContainsKey('PeriodEnd')
+    $monthGroups = @()
+    if ($hasPeriod) {
+        $monthGroups = @(Get-PayrollPeriodMonthDayGroups -PeriodStart $PeriodStart -PeriodEnd $PeriodEnd)
+    }
 
     $results = [System.Collections.Generic.List[object]]::new()
 
     foreach ($branch in $BranchPaths) {
-        [string[]]$paths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
+        [string[]]$fallbackPaths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
             @($branch.Paths)
         }
         else {
             @($branch.Path)
         }
 
-        Write-Log ("[open-flow] Evaluating branch: Label='{0}', PathCount={1}, Paths='{2}'" -f `
-                $branch.Label, $paths.Count, ($paths -join "'; '")) -Level DEBUG
+        $hasBasePaths = $branch.PSObject.Properties['BasePaths'] -and $branch.BasePaths -and @($branch.BasePaths).Count -gt 0
+        [string[]]$scanBases = if ($hasBasePaths) {
+            @($branch.BasePaths)
+        }
+        elseif ($branch.PSObject.Properties['BasePath'] -and -not [string]::IsNullOrWhiteSpace([string]$branch.BasePath)) {
+            @([string]$branch.BasePath)
+        }
+        else {
+            @()
+        }
+
+        $resolvePerMonth = $hasPeriod -and $monthGroups.Count -gt 0 -and $scanBases.Count -gt 0 -and (
+            -not [string]::IsNullOrWhiteSpace($script:date_subpath) -or $script:use_branch_year_month
+        )
+
+        $scanFolders = [System.Collections.Generic.List[string]]::new()
+        if ($resolvePerMonth) {
+            foreach ($root in $scanBases) {
+                foreach ($group in $monthGroups) {
+                    try {
+                        $folderPath = Resolve-SrScanFolder -BasePath $root -AnchorDate $group.AnchorDate
+                        if (-not [string]::IsNullOrWhiteSpace($folderPath) -and -not ($scanFolders -contains $folderPath)) {
+                            $scanFolders.Add($folderPath)
+                        }
+                        Write-Log ("[open-flow] Month segment folder: Label='{0}', Anchor='{1:yyyy-MM-dd}', Path='{2}'" -f `
+                                $branch.Label, $group.AnchorDate, $folderPath) -Level DEBUG
+                    }
+                    catch {
+                        Write-Log ("[open-flow] Could not resolve incentives folder for month: Label='{0}', Base='{1}', Anchor='{2:yyyy-MM-dd}', Message='{3}'" -f `
+                                $branch.Label, $root, $group.AnchorDate, $_.Exception.Message) -Level DEBUG
+                    }
+                }
+            }
+        }
+
+        [string[]]$paths = if ($scanFolders.Count -gt 0) {
+            @($scanFolders.ToArray())
+        }
+        else {
+            $fallbackPaths
+        }
+
+        Write-Log ("[open-flow] Evaluating branch: Label='{0}', PathCount={1}, ResolvePerMonth={2}, Paths='{3}'" -f `
+                $branch.Label, $paths.Count, $resolvePerMonth, ($paths -join "'; '")) -Level DEBUG
 
         $hasFile = $false
         $matchedPath = $null
@@ -1137,7 +1189,7 @@ function Get-BranchesWithCutoffFiles {
             }
         }
 
-        $selectedPath = if ($matchedPath) { $matchedPath } else { $paths[0] }
+        $selectedPath = if ($matchedPath) { $matchedPath } elseif ($paths.Count -gt 0) { $paths[0] } else { $fallbackPaths[0] }
         Write-Log ("[open-flow] Branch final result: Label='{0}', HasFile={1}, SelectedPath='{2}', MatchedPath='{3}'" -f `
                 $branch.Label, $hasFile, $selectedPath, $matchedPath) -Level DEBUG
 
@@ -1669,8 +1721,9 @@ function Initialize-Config {
                     Write-Log ("[open-flow] DATE_SUBPATH resolved: Label='{0}', Base='{1}', Path='{2}'" -f `
                             $branch.Label, $branch.Path, $resolved) -Level DEBUG
                     [pscustomobject]@{
-                        Label = $branch.Label
-                        Path  = $resolved
+                        Label    = $branch.Label
+                        Path     = $resolved
+                        BasePath = $branch.Path
                     }
                 }
             )
@@ -1686,12 +1739,13 @@ function Initialize-Config {
         $script:branch_paths = @(
             foreach ($branch in $script:branch_paths) {
                 [pscustomobject]@{
-                    Label = $branch.Label
-                    Path  = Resolve-BranchFolderPath `
+                    Label    = $branch.Label
+                    Path     = Resolve-BranchFolderPath `
                         -BasePath $branch.Path `
                         -UseBranchYearMonth $true `
                         -BranchYear $script:branch_year `
                         -BranchMonth $script:branch_month
+                    BasePath = $branch.Path
                 }
             }
         )
@@ -1859,6 +1913,8 @@ function Get-CutoffFilesCheckDisplay {
         -BranchPaths $script:branch_paths `
         -StartDay $startDay `
         -EndDay $endDay `
+        -PeriodStart $period.Start `
+        -PeriodEnd $period.End `
         -OnError {
         param($branch, $message)
         Write-Log "Cannot scan '$($branch.Label)' ($($branch.Path)): $message" -Level ERROR
