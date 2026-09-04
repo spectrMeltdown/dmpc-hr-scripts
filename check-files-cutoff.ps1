@@ -24,6 +24,7 @@ $script:sr_paths = @()
 $script:sr_file_extensions = @('.pdf', '.png', '.jpg', '.jpeg', '.xlsx', '.xls')
 $script:sr_open_max = 10
 $script:show_sr_button = $true
+$script:final_sc_incentives_path = $null
 $script:cutoffPopupForm = $null
 
 function Import-DotEnv {
@@ -1216,6 +1217,24 @@ function Show-CutoffFilesPopup {
         ($margin + $contentHeight + $buttonGap)
     )
 
+    $showFinalScButton = -not [string]::IsNullOrWhiteSpace($script:final_sc_incentives_path)
+    $finalScButton = $null
+    if ($showFinalScButton) {
+        $finalScButtonWidth = 120
+        $finalScButton = New-Object System.Windows.Forms.Button
+        $finalScButton.Text = 'Open Final SC'
+        $finalScButton.Size = New-Object System.Drawing.Size($finalScButtonWidth, $buttonHeight)
+        $finalScButton.Location = New-Object System.Drawing.Point(
+            ($formWidth - $margin - $buttonWidth - $buttonGap - $finalScButtonWidth),
+            ($margin + $contentHeight + $buttonGap)
+        )
+        $finalScButton.Add_Click({
+                param($sender, $eventArgs)
+                Write-Log ("[open-final-sc] Open Final SC clicked: Path='{0}'" -f $script:final_sc_incentives_path) -Level DEBUG
+                Open-CutoffFolderInExplorer -FolderPath ([string]$script:final_sc_incentives_path) -BranchLabel 'Final SC'
+            })
+    }
+
     $rebuildRows = {
         param([object[]]$RowResults)
 
@@ -1315,6 +1334,9 @@ function Show-CutoffFilesPopup {
 
     $form.Controls.Add($listPanel)
     $form.Controls.Add($okButton)
+    if ($finalScButton) {
+        $form.Controls.Add($finalScButton)
+    }
     $form.AcceptButton = $okButton
 
     $timer = $null
@@ -1579,6 +1601,12 @@ function Initialize-Config {
     $showSrButtonValue = if ($envMap.ContainsKey('SHOW_SR_BUTTON')) { $envMap['SHOW_SR_BUTTON'] } else { $null }
     $script:show_sr_button = Test-EnvBool -Value $showSrButtonValue -Default $true
 
+    $script:final_sc_incentives_path = $null
+    if ($envMap.ContainsKey('FINAL_SC_INCENTIVES_PATH') -and -not [string]::IsNullOrWhiteSpace($envMap['FINAL_SC_INCENTIVES_PATH'])) {
+        $script:final_sc_incentives_path = Resolve-ConfigPath -PathValue $envMap['FINAL_SC_INCENTIVES_PATH'].Trim()
+        Write-Log ("[open-final-sc] Configured path: Path='{0}'" -f $script:final_sc_incentives_path) -Level DEBUG
+    }
+
     $script:sr_open_max = 10
     if ($envMap.ContainsKey('SR_OPEN_MAX') -and -not [string]::IsNullOrWhiteSpace($envMap['SR_OPEN_MAX'])) {
         $parsedSrOpenMax = 0
@@ -1658,9 +1686,9 @@ function Initialize-Config {
         Write-Log ("[open-sr] Grouped SR paths: Count={0}" -f $script:sr_paths.Count) -Level DEBUG
     }
 
-    Write-Log ("[open-flow] Config scan options: RefreshIntervalSeconds={0}, Recursive={1}, Depth={2}, Extensions='{3}', ShowSrButton={4}, SrOpenMax={5}, SrExtensions='{6}', SrPathCount={7}" -f `
+    Write-Log ("[open-flow] Config scan options: RefreshIntervalSeconds={0}, Recursive={1}, Depth={2}, Extensions='{3}', ShowSrButton={4}, SrOpenMax={5}, SrExtensions='{6}', SrPathCount={7}, FinalScPath='{8}'" -f `
             $script:refresh_interval_seconds, $script:recursive, $script:dir_level_search, ($script:cutoff_file_extensions -join ','), `
-            $script:show_sr_button, $script:sr_open_max, ($script:sr_file_extensions -join ','), $script:sr_paths.Count) -Level DEBUG
+            $script:show_sr_button, $script:sr_open_max, ($script:sr_file_extensions -join ','), $script:sr_paths.Count, $script:final_sc_incentives_path) -Level DEBUG
 }
 
 function Get-CutoffFilesCheckDisplay {
