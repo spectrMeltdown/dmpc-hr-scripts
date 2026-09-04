@@ -11,6 +11,7 @@ $script:branch_payroll_end_day = 'Tuesday'
 $script:payroll_target_period = 'next'
 $script:ref_run_date = $null
 $script:branch_paths = @()
+$script:date_subpath = $null
 $script:use_branch_year_month = $false
 $script:branch_year = $null
 $script:branch_month = $null
@@ -154,6 +155,119 @@ function Assert-BranchYearMonthConfig {
     if ([string]::IsNullOrWhiteSpace($BranchMonth)) {
         throw 'BRANCH_MONTH is required when USE_BRANCH_YEAR_MONTH is true'
     }
+}
+
+function Expand-DateSubpathPattern {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Pattern,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$Date
+    )
+
+    if ([string]::IsNullOrEmpty($Pattern)) {
+        return $Pattern
+    }
+
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    # Longest tokens first so MMMM wins over MMM/MM/M.
+    $tokens = @(
+        @{ Name = 'yyyy'; Value = $Date.ToString('yyyy', $culture) }
+        @{ Name = 'MMMM'; Value = $Date.ToString('MMMM', $culture) }
+        @{ Name = 'MMM'; Value = $Date.ToString('MMM', $culture) }
+        @{ Name = 'MM'; Value = $Date.ToString('MM', $culture) }
+        @{ Name = 'M'; Value = $Date.ToString('%M', $culture) }
+    )
+
+    $sb = New-Object System.Text.StringBuilder
+    $i = 0
+    while ($i -lt $Pattern.Length) {
+        $matched = $false
+        foreach ($token in $tokens) {
+            $name = $token.Name
+            $len = $name.Length
+            if (($i + $len) -le $Pattern.Length -and $Pattern.Substring($i, $len) -eq $name) {
+                [void]$sb.Append($token.Value)
+                $i += $len
+                $matched = $true
+                break
+            }
+        }
+        if (-not $matched) {
+            [void]$sb.Append($Pattern[$i])
+            $i++
+        }
+    }
+
+    return $sb.ToString()
+}
+
+function Resolve-DateSubpath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Pattern,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$Date
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Pattern)) {
+        return $BasePath
+    }
+
+    $expanded = Expand-DateSubpathPattern -Pattern $Pattern.Trim() -Date $Date
+    $segments = @(
+        $expanded -split '[\\/]+' |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    $current = $BasePath
+    foreach ($segment in $segments) {
+        if ($segment -match '[*?]') {
+            if (-not (Test-Path -LiteralPath $current -PathType Container)) {
+                throw ("Cannot resolve DATE_SUBPATH segment '{0}': parent folder missing: {1}" -f $segment, $current)
+            }
+
+            # "*Aug" should match "8. August"; standard wildcards are whole-string, so
+            # a leading-* segment with no trailing wildcard gets an implicit trailing "*".
+            $matchPattern = $segment
+            if ($matchPattern.StartsWith('*') -and $matchPattern -notmatch '[*?]$') {
+                $matchPattern = $matchPattern + '*'
+            }
+
+            $wildcard = [System.Management.Automation.WildcardPattern]::new(
+                $matchPattern,
+                [System.Management.Automation.WildcardOptions]::IgnoreCase
+            )
+            $matched = @(
+                Get-ChildItem -LiteralPath $current -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $wildcard.IsMatch($_.Name) }
+            )
+
+            if ($matched.Count -eq 0) {
+                throw ("DATE_SUBPATH segment '{0}' matched no folders under '{1}'" -f $segment, $current)
+            }
+
+            if ($matched.Count -gt 1) {
+                $names = ($matched | ForEach-Object { $_.Name }) -join ', '
+                throw ("DATE_SUBPATH segment '{0}' matched multiple folders under '{1}': {2}" -f `
+                        $segment, $current, $names)
+            }
+
+            $current = $matched[0].FullName
+        }
+        else {
+            $current = Join-Path $current $segment
+        }
+    }
+
+    return $current
 }
 
 function Resolve-BranchFolderPath {
@@ -924,7 +1038,6 @@ function Test-CutoffFilesDisplayChanged {
 
 function Invoke-CutoffFilesChangeAlert {
     try {
-        Add-Type -AssemblyName System.Media -ErrorAction Stop
         [System.Media.SystemSounds]::Exclamation.Play()
     }
     catch {
@@ -1320,20 +1433,46 @@ function Initialize-Config {
         )
     }
 
+    $script:date_subpath = $null
+    if ($envMap.ContainsKey('DATE_SUBPATH') -and -not [string]::IsNullOrWhiteSpace($envMap['DATE_SUBPATH'])) {
+        $script:date_subpath = $envMap['DATE_SUBPATH'].Trim()
+    }
+
     $useYearMonthValue = if ($envMap.ContainsKey('USE_BRANCH_YEAR_MONTH')) { $envMap['USE_BRANCH_YEAR_MONTH'] } else { $null }
     $script:use_branch_year_month = Test-EnvBool -Value $useYearMonthValue -Default $false
     $script:branch_year = if ($envMap.ContainsKey('BRANCH_YEAR')) { $envMap['BRANCH_YEAR'] } else { $null }
     $script:branch_month = if ($envMap.ContainsKey('BRANCH_MONTH')) { $envMap['BRANCH_MONTH'] } else { $null }
 
+    # DATE_SUBPATH takes precedence; legacy year/month trio only applies when DATE_SUBPATH is empty.
+    $useLegacyYearMonth = [string]::IsNullOrWhiteSpace($script:date_subpath) -and $script:use_branch_year_month
+
     try {
         Assert-BranchYearMonthConfig `
-            -UseBranchYearMonth $script:use_branch_year_month `
+            -UseBranchYearMonth $useLegacyYearMonth `
             -BranchYear $script:branch_year `
             -BranchMonth $script:branch_month
     }
     catch {
         Write-Error $_.Exception.Message
         exit 1
+    }
+
+    $subpathReferenceDate = if ($script:ref_run_date) { $script:ref_run_date } else { [DateTime]::Today }
+    $subpathPeriod = $null
+    if (-not [string]::IsNullOrWhiteSpace($script:date_subpath)) {
+        try {
+            $subpathPeriod = Get-BranchPayrollPeriod `
+                -StartDay $script:branch_payroll_start_day `
+                -EndDay $script:branch_payroll_end_day `
+                -TargetPeriod $script:payroll_target_period `
+                -ReferenceDate $subpathReferenceDate
+            Write-Log ("[open-flow] DATE_SUBPATH period: Pattern='{0}', PeriodStart='{1:yyyy-MM-dd}', PeriodEnd='{2:yyyy-MM-dd}'" -f `
+                    $script:date_subpath, $subpathPeriod.Start, $subpathPeriod.End) -Level DEBUG
+        }
+        catch {
+            Write-Error $_.Exception.Message
+            exit 1
+        }
     }
 
     try {
@@ -1350,7 +1489,31 @@ function Initialize-Config {
         exit 1
     }
 
-    if ($script:use_branch_year_month) {
+    if (-not [string]::IsNullOrWhiteSpace($script:date_subpath)) {
+        try {
+            $script:branch_paths = @(
+                foreach ($branch in $script:branch_paths) {
+                    $resolved = Resolve-DateSubpath `
+                        -BasePath $branch.Path `
+                        -Pattern $script:date_subpath `
+                        -Date $subpathPeriod.Start
+                    Write-Log ("[open-flow] DATE_SUBPATH resolved: Label='{0}', Base='{1}', Path='{2}'" -f `
+                            $branch.Label, $branch.Path, $resolved) -Level DEBUG
+                    [pscustomobject]@{
+                        Label = $branch.Label
+                        Path  = $resolved
+                    }
+                }
+            )
+            Write-Log ("[open-flow] Applied DATE_SUBPATH: Pattern='{0}', PeriodStart='{1:yyyy-MM-dd}', Count={2}" -f `
+                    $script:date_subpath, $subpathPeriod.Start, $script:branch_paths.Count) -Level DEBUG
+        }
+        catch {
+            Write-Error $_.Exception.Message
+            exit 1
+        }
+    }
+    elseif ($useLegacyYearMonth) {
         $script:branch_paths = @(
             foreach ($branch in $script:branch_paths) {
                 [pscustomobject]@{
@@ -1363,7 +1526,7 @@ function Initialize-Config {
                 }
             }
         )
-        Write-Log ("[open-flow] Applied branch year/month suffix: Year='{0}', Month='{1}', Count={2}" -f `
+        Write-Log ("[open-flow] Applied legacy branch year/month suffix: Year='{0}', Month='{1}', Count={2}" -f `
                 $script:branch_year, $script:branch_month, $script:branch_paths.Count) -Level DEBUG
     }
 
@@ -1447,7 +1610,31 @@ function Initialize-Config {
             exit 1
         }
 
-        if ($script:use_branch_year_month) {
+        if (-not [string]::IsNullOrWhiteSpace($script:date_subpath)) {
+            try {
+                $script:sr_paths = @(
+                    foreach ($branch in $script:sr_paths) {
+                        $resolved = Resolve-DateSubpath `
+                            -BasePath $branch.Path `
+                            -Pattern $script:date_subpath `
+                            -Date $subpathPeriod.Start
+                        Write-Log ("[open-sr] DATE_SUBPATH resolved: Label='{0}', Base='{1}', Path='{2}'" -f `
+                                $branch.Label, $branch.Path, $resolved) -Level DEBUG
+                        [pscustomobject]@{
+                            Label = $branch.Label
+                            Path  = $resolved
+                        }
+                    }
+                )
+                Write-Log ("[open-sr] Applied DATE_SUBPATH: Pattern='{0}', PeriodStart='{1:yyyy-MM-dd}', Count={2}" -f `
+                        $script:date_subpath, $subpathPeriod.Start, $script:sr_paths.Count) -Level DEBUG
+            }
+            catch {
+                Write-Error $_.Exception.Message
+                exit 1
+            }
+        }
+        elseif ($useLegacyYearMonth) {
             $script:sr_paths = @(
                 foreach ($branch in $script:sr_paths) {
                     [pscustomobject]@{
@@ -1460,7 +1647,7 @@ function Initialize-Config {
                     }
                 }
             )
-            Write-Log ("[open-sr] Applied SR year/month resolution: Year='{0}', Month='{1}', Count={2}" -f `
+            Write-Log ("[open-sr] Applied legacy SR year/month resolution: Year='{0}', Month='{1}', Count={2}" -f `
                     $script:branch_year, $script:branch_month, $script:sr_paths.Count) -Level DEBUG
             foreach ($branch in $script:sr_paths) {
                 Write-Log ("[open-sr] Resolved SR path: Label='{0}', Path='{1}'" -f $branch.Label, $branch.Path) -Level DEBUG
