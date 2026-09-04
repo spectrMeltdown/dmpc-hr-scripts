@@ -125,6 +125,59 @@ Assert-True $threwMonth 'Expected Assert-BranchYearMonthConfig to throw when BRA
 
 Assert-BranchYearMonthConfig -UseBranchYearMonth $false -BranchYear '' -BranchMonth ''
 
+# --- DATE_SUBPATH expand + glob resolve ---
+
+$augDate = [DateTime]::ParseExact('2026-08-05', 'yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+Assert-True ((Expand-DateSubpathPattern -Pattern '\yyyy\*MMM' -Date $augDate) -eq '\2026\*Aug') `
+    'Expected Expand-DateSubpathPattern to expand yyyy and MMM'
+Assert-True ((Expand-DateSubpathPattern -Pattern 'yyyy\M. MMMM' -Date $augDate) -eq '2026\8. August') `
+    'Expected Expand-DateSubpathPattern to expand M and MMMM'
+Assert-True ((Expand-DateSubpathPattern -Pattern 'yyyy\MM' -Date $augDate) -eq '2026\08') `
+    'Expected Expand-DateSubpathPattern to expand MM'
+
+$dateSubTemp = Join-Path ([IO.Path]::GetTempPath()) ("date-subpath-" + [guid]::NewGuid().ToString('N'))
+try {
+    $yearFolder = Join-Path $dateSubTemp '2026'
+    $monthFolder = Join-Path $yearFolder '8. August'
+    New-Item -ItemType Directory -Path $monthFolder -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $yearFolder '7. July') -Force | Out-Null
+
+    $resolvedGlob = Resolve-DateSubpath -BasePath $dateSubTemp -Pattern '\yyyy\*MMM' -Date $augDate
+    Assert-True ($resolvedGlob -eq $monthFolder) `
+        "Expected glob DATE_SUBPATH to resolve to $monthFolder, got $resolvedGlob"
+
+    $resolvedExact = Resolve-DateSubpath -BasePath $dateSubTemp -Pattern 'yyyy\8. August' -Date $augDate
+    Assert-True ($resolvedExact -eq $monthFolder) `
+        "Expected exact DATE_SUBPATH to resolve to $monthFolder, got $resolvedExact"
+
+    $blankSubpath = Resolve-DateSubpath -BasePath $dateSubTemp -Pattern '' -Date $augDate
+    Assert-True ($blankSubpath -eq $dateSubTemp) 'Empty DATE_SUBPATH should leave base path unchanged'
+
+    $threwAmbiguous = $false
+    New-Item -ItemType Directory -Path (Join-Path $yearFolder 'Aug backups') -Force | Out-Null
+    try {
+        [void](Resolve-DateSubpath -BasePath $dateSubTemp -Pattern '\yyyy\*MMM' -Date $augDate)
+    }
+    catch {
+        $threwAmbiguous = $true
+    }
+    Assert-True $threwAmbiguous 'Expected Resolve-DateSubpath to throw when glob matches multiple folders'
+
+    $threwMissing = $false
+    try {
+        [void](Resolve-DateSubpath -BasePath $dateSubTemp -Pattern '\yyyy\*MMM' -Date ([DateTime]'2026-01-15'))
+    }
+    catch {
+        $threwMissing = $true
+    }
+    Assert-True $threwMissing 'Expected Resolve-DateSubpath to throw when glob matches no folders'
+}
+finally {
+    if (Test-Path -LiteralPath $dateSubTemp) {
+        Remove-Item -LiteralPath $dateSubTemp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Grouped single-path branches must keep the whole string, not the first character.
 $singleGroupedPath = '\\server\AST-AKLAN Branch\Payroll\3. Sales Clerk Incentives\2026\7. July'
 $singleGrouped = @(Group-BranchPaths -BranchPaths @(
