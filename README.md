@@ -54,24 +54,35 @@ Optional:
 
 | Setting | What it means |
 |--------|----------------|
-| **BRANCH_PATHS** | Branch map: one `BRANCH_PATHS=Label=FolderPath` line per branch (preferred). You can also put several pairs on one line separated by `;`. When **USE_BRANCH_YEAR_MONTH** is true, use the base folder (without year/month). |
-| **USE_BRANCH_YEAR_MONTH** | `true` to append **BRANCH_YEAR**\\**BRANCH_MONTH** under each branch path. `false` (default) uses paths as written. |
-| **BRANCH_YEAR** | Year folder segment (e.g. `2026`). Required when **USE_BRANCH_YEAR_MONTH** is true. |
-| **BRANCH_MONTH** | Month folder segment (e.g. `7. July`). Required when **USE_BRANCH_YEAR_MONTH** is true. |
+| **BRANCH_PATHS** | Branch map: one `BRANCH_PATHS=Label=FolderPath` line per branch (preferred). You can also put several pairs on one line separated by `;`. When **DATE_SUBPATH** or **USE_BRANCH_YEAR_MONTH** is used, set the base folder (without year/month). |
+| **DATE_SUBPATH** | Optional path template appended under each branch/SR base path. Tokens (`yyyy`, `MMMM`, `MMM`, `MM`, `M`) expand from the **payroll period start** date. Segments may use `*` / `?` globs (e.g. `\yyyy\*MMM` → `2026\` then match `8. August`; a leading `*` with no trailing wildcard implies a trailing `*`). When set, legacy year/month keys below are ignored. |
+| **USE_BRANCH_YEAR_MONTH** | *(Legacy)* `true` to append **BRANCH_YEAR**\\**BRANCH_MONTH** under each branch path. Only used when **DATE_SUBPATH** is empty. `false` (default) uses paths as written. |
+| **BRANCH_YEAR** | *(Legacy)* Year folder segment (e.g. `2026`). Required when **USE_BRANCH_YEAR_MONTH** is true and **DATE_SUBPATH** is empty. |
+| **BRANCH_MONTH** | *(Legacy)* Month folder segment (e.g. `7. July`). Required when **USE_BRANCH_YEAR_MONTH** is true and **DATE_SUBPATH** is empty. |
 | **PAYROLL_TARGET_PERIOD** | `next` (default, upcoming Wed–Tue week), `current` (period ending on/before today), or `previous` (week before current) |
 | **BRANCH_PAYROLL_START_DAY** | Period start weekday (default `Wednesday`) |
 | **BRANCH_PAYROLL_END_DAY** | Period end weekday (default `Tuesday`) |
 | **REF_RUN_DATE** | Optional fixed date `yyyy-MM-dd` used instead of today when calculating the period |
 | **LOG_PATH** | Log file path (e.g. `logs\check-files-cutoff.log`) |
 | **LOG_LEVEL** | Minimum log level: `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default `INFO`). Use `DEBUG` for open-flow / path troubleshooting detail |
-| **SR_PATHS** | Sales report folder map (same `Label=Path` format as **BRANCH_PATHS**; labels must match grouped branch names). Uses **USE_BRANCH_YEAR_MONTH** when enabled |
+| **SR_PATHS** | Sales report folder map (same `Label=Path` format as **BRANCH_PATHS**; labels must match grouped branch names). Uses **DATE_SUBPATH** (or legacy year/month) the same way as **BRANCH_PATHS** |
 | **SR_FILE_EXTENSIONS** | Extensions Open SR searches for (default includes PDF, images, Excel) |
 | **SR_OPEN_MAX** | Maximum sales report files opened per Open SR click (default `10`) |
 | **SHOW_SR_BUTTON** | `true` to show the Open SR button in the popup (default `true`) |
 
 Matching is by **day numbers around a dash** in the filename (e.g. `8-14`, `08-14`, or `29-AUG 5` in `JULY 29-AUG 5`). Month text between the days is ignored and does not need to be spelled correctly. Only top-level `.xlsx` / `.xls` files are checked (Excel lock files starting with `~$` are skipped).
 
-**Example — base paths + shared year/month:**
+**Example — base paths + DATE_SUBPATH (preferred):**
+
+```env
+DATE_SUBPATH=\yyyy\*MMM
+BRANCH_PATHS=Aklan=\\server\AST-AKLAN Branch\Payroll\3. Sales Clerk Incentives
+BRANCH_PATHS=Balete=\\server\AST-BALETE-MIN Branch\Payroll\3. Sales Clerk Incentives
+```
+
+With a payroll period starting in July 2026, resolves under each base to `...\2026\` then the unique month folder matching `*Jul` (e.g. `7. July`). Cross-month weeks use the **period start** month.
+
+**Example — legacy base paths + shared year/month:**
 
 ```env
 USE_BRANCH_YEAR_MONTH=true
@@ -81,7 +92,7 @@ BRANCH_PATHS=Aklan=\\server\AST-AKLAN Branch\Payroll\3. Sales Clerk Incentives
 BRANCH_PATHS=Balete=\\server\AST-BALETE-MIN Branch\Payroll\3. Sales Clerk Incentives
 ```
 
-Resolves to `...\3. Sales Clerk Incentives\2026\7. July` for each branch.
+Resolves to `...\3. Sales Clerk Incentives\2026\7. July` for each branch (only when **DATE_SUBPATH** is empty).
 
 ### Running tests
 
