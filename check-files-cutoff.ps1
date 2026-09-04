@@ -523,20 +523,39 @@ function Group-BranchPaths {
     foreach ($branch in $BranchPaths) {
         $groupLabel = Get-BranchGroupLabel -Label $branch.Label
         if (-not $groups.ContainsKey($groupLabel)) {
-            $groups[$groupLabel] = [System.Collections.Generic.List[string]]::new()
+            $groups[$groupLabel] = @{
+                Paths     = [System.Collections.Generic.List[string]]::new()
+                BasePaths = [System.Collections.Generic.List[string]]::new()
+            }
             $ordered.Add($groupLabel)
         }
-        $groups[$groupLabel].Add($branch.Path)
+        $groups[$groupLabel].Paths.Add($branch.Path)
+        if ($branch.PSObject.Properties['BasePath'] -and -not [string]::IsNullOrWhiteSpace([string]$branch.BasePath)) {
+            $groups[$groupLabel].BasePaths.Add([string]$branch.BasePath)
+        }
     }
 
     $list = [System.Collections.Generic.List[object]]::new()
     foreach ($groupLabel in $ordered) {
-        [string[]]$paths = @($groups[$groupLabel].ToArray())
-        $list.Add([pscustomobject]@{
-                Label = $groupLabel
-                Paths = [string[]]@($paths)
-                Path  = $paths[0]
-            })
+        $group = $groups[$groupLabel]
+        [string[]]$paths = @($group.Paths.ToArray())
+        if ($group.BasePaths.Count -gt 0 -and $group.BasePaths.Count -eq $group.Paths.Count) {
+            [string[]]$basePaths = @($group.BasePaths.ToArray())
+            $list.Add([pscustomobject]@{
+                    Label     = $groupLabel
+                    Paths     = [string[]]@($paths)
+                    Path      = $paths[0]
+                    BasePaths = [string[]]@($basePaths)
+                    BasePath  = $basePaths[0]
+                })
+        }
+        else {
+            $list.Add([pscustomobject]@{
+                    Label = $groupLabel
+                    Paths = [string[]]@($paths)
+                    Path  = $paths[0]
+                })
+        }
     }
 
     return @($list.ToArray())
@@ -641,6 +660,52 @@ function Get-PayrollPeriodDayNumbers {
     return @($days | Sort-Object)
 }
 
+function Get-PayrollPeriodMonthDayGroups {
+    param(
+        [Parameter(Mandatory = $true)]
+        [DateTime]$PeriodStart,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$PeriodEnd
+    )
+
+    $groups = [System.Collections.Generic.List[object]]::new()
+    $cursor = $PeriodStart.Date
+    $end = $PeriodEnd.Date
+
+    $currentAnchor = $null
+    $currentYear = 0
+    $currentMonth = 0
+    $currentDays = $null
+
+    while ($cursor -le $end) {
+        if ($null -eq $currentDays -or $cursor.Year -ne $currentYear -or $cursor.Month -ne $currentMonth) {
+            if ($null -ne $currentDays) {
+                $groups.Add([pscustomobject]@{
+                        AnchorDate = $currentAnchor
+                        Days       = [int[]]@($currentDays.ToArray())
+                    })
+            }
+            $currentAnchor = $cursor
+            $currentYear = $cursor.Year
+            $currentMonth = $cursor.Month
+            $currentDays = [System.Collections.Generic.List[int]]::new()
+        }
+
+        $currentDays.Add($cursor.Day)
+        $cursor = $cursor.AddDays(1)
+    }
+
+    if ($null -ne $currentDays) {
+        $groups.Add([pscustomobject]@{
+                AnchorDate = $currentAnchor
+                Days       = [int[]]@($currentDays.ToArray())
+            })
+    }
+
+    return @($groups.ToArray())
+}
+
 function Test-FilenameContainsSalesReportDay {
     param(
         [Parameter(Mandatory = $true)]
@@ -720,6 +785,33 @@ function Get-SalesReportFilesInFolder {
     return @($matches.ToArray())
 }
 
+function Resolve-SrScanFolder {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$AnchorDate
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($script:date_subpath)) {
+        return Resolve-DateSubpath `
+            -BasePath $BasePath `
+            -Pattern $script:date_subpath `
+            -Date $AnchorDate
+    }
+
+    if ($script:use_branch_year_month) {
+        return Resolve-SrBranchFolderPath `
+            -BasePath $BasePath `
+            -UseBranchYearMonth $true `
+            -BranchYear $AnchorDate.ToString('yyyy') `
+            -BranchMonth $AnchorDate.Month.ToString()
+    }
+
+    return $BasePath
+}
+
 function Get-SrBranchGroupByLabel {
     param(
         [Parameter(Mandatory = $true)]
@@ -741,7 +833,10 @@ function Find-BranchSalesReportFiles {
         [string]$BranchLabel,
 
         [Parameter(Mandatory = $true)]
-        [int[]]$PeriodDays
+        [DateTime]$PeriodStart,
+
+        [Parameter(Mandatory = $true)]
+        [DateTime]$PeriodEnd
     )
 
     $branch = Get-SrBranchGroupByLabel -BranchLabel $BranchLabel
@@ -750,27 +845,75 @@ function Find-BranchSalesReportFiles {
         return @()
     }
 
-    [string[]]$paths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
+    $monthGroups = @(Get-PayrollPeriodMonthDayGroups -PeriodStart $PeriodStart -PeriodEnd $PeriodEnd)
+    if ($monthGroups.Count -eq 0) {
+        return @()
+    }
+
+    $hasBasePaths = $branch.PSObject.Properties['BasePaths'] -and $branch.BasePaths -and @($branch.BasePaths).Count -gt 0
+    [string[]]$scanBases = if ($hasBasePaths) {
+        @($branch.BasePaths)
+    }
+    elseif ($branch.PSObject.Properties['BasePath'] -and -not [string]::IsNullOrWhiteSpace([string]$branch.BasePath)) {
+        @([string]$branch.BasePath)
+    }
+    else {
+        @()
+    }
+
+    [string[]]$fallbackPaths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
         @($branch.Paths)
     }
     else {
         @($branch.Path)
     }
 
-    Write-Log ("[open-sr] Finding sales report files: Label='{0}', PathCount={1}, Paths='{2}'" -f `
-            $BranchLabel, $paths.Count, ($paths -join "'; '")) -Level DEBUG
+    $resolvePerMonth = $scanBases.Count -gt 0 -and (
+        -not [string]::IsNullOrWhiteSpace($script:date_subpath) -or $script:use_branch_year_month
+    )
 
+    [string[]]$roots = if ($resolvePerMonth) { $scanBases } else { $fallbackPaths }
+
+    Write-Log ("[open-sr] Finding sales report files: Label='{0}', RootCount={1}, MonthGroups={2}, ResolvePerMonth={3}, Roots='{4}'" -f `
+            $BranchLabel, $roots.Count, $monthGroups.Count, $resolvePerMonth, ($roots -join "'; '")) -Level DEBUG
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
     $allMatches = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
-    foreach ($folderPath in $paths) {
-        try {
-            $folderMatches = @(Get-SalesReportFilesInFolder -FolderPath $folderPath -PeriodDays $PeriodDays)
-            foreach ($match in $folderMatches) {
-                $allMatches.Add($match)
+
+    foreach ($root in $roots) {
+        foreach ($group in $monthGroups) {
+            $folderPath = $null
+            try {
+                if ($resolvePerMonth) {
+                    $folderPath = Resolve-SrScanFolder -BasePath $root -AnchorDate $group.AnchorDate
+                }
+                else {
+                    $folderPath = $root
+                }
             }
-        }
-        catch {
-            Write-Log ("[open-sr] Scan error: Label='{0}', Path='{1}', Message='{2}'" -f `
-                    $BranchLabel, $folderPath, $_.Exception.Message) -Level ERROR
+            catch {
+                Write-Log ("[open-sr] Could not resolve SR folder for month: Label='{0}', Base='{1}', Anchor='{2:yyyy-MM-dd}', Message='{3}'" -f `
+                        $BranchLabel, $root, $group.AnchorDate, $_.Exception.Message) -Level DEBUG
+                continue
+            }
+
+            Write-Log ("[open-sr] Month segment scan: Label='{0}', Anchor='{1:yyyy-MM-dd}', Days='{2}', Path='{3}'" -f `
+                    $BranchLabel, $group.AnchorDate, ($group.Days -join ','), $folderPath) -Level DEBUG
+
+            try {
+                $folderMatches = @(Get-SalesReportFilesInFolder -FolderPath $folderPath -PeriodDays $group.Days)
+                foreach ($match in $folderMatches) {
+                    if ($seen.Add($match.FullName)) {
+                        $allMatches.Add($match)
+                    }
+                }
+            }
+            catch {
+                Write-Log ("[open-sr] Scan error: Label='{0}', Path='{1}', Message='{2}'" -f `
+                        $BranchLabel, $folderPath, $_.Exception.Message) -Level ERROR
+            }
         }
     }
 
@@ -814,6 +957,7 @@ function Open-BranchSalesReports {
 
     $period = Get-CurrentPayrollPeriod
     try {
+        $monthGroups = @(Get-PayrollPeriodMonthDayGroups -PeriodStart $period.Start -PeriodEnd $period.End)
         $periodDays = @(Get-PayrollPeriodDayNumbers -PeriodStart $period.Start -PeriodEnd $period.End)
     }
     catch {
@@ -825,7 +969,7 @@ function Open-BranchSalesReports {
         return
     }
 
-    if ($periodDays.Count -eq 0) {
+    if ($monthGroups.Count -eq 0 -or $periodDays.Count -eq 0) {
         Write-Log ("[open-sr] Period day list unexpectedly empty: Label='{0}', Period='{1:yyyy-MM-dd}' to '{2:yyyy-MM-dd}'" -f `
                 $BranchLabel, $period.Start, $period.End) -Level ERROR
         Show-CutoffMessageBox `
@@ -834,10 +978,13 @@ function Open-BranchSalesReports {
         return
     }
 
-    Write-Log ("[open-sr] Period days for matching: Label='{0}', Days='{1}', Period='{2:yyyy-MM-dd}' to '{3:yyyy-MM-dd}'" -f `
-            $BranchLabel, ($periodDays -join ','), $period.Start, $period.End) -Level DEBUG
+    Write-Log ("[open-sr] Period days for matching: Label='{0}', Days='{1}', MonthGroups={2}, Period='{3:yyyy-MM-dd}' to '{4:yyyy-MM-dd}'" -f `
+            $BranchLabel, ($periodDays -join ','), $monthGroups.Count, $period.Start, $period.End) -Level DEBUG
 
-    $matchedFiles = @(Find-BranchSalesReportFiles -BranchLabel $BranchLabel -PeriodDays $periodDays)
+    $matchedFiles = @(Find-BranchSalesReportFiles `
+            -BranchLabel $BranchLabel `
+            -PeriodStart $period.Start `
+            -PeriodEnd $period.End)
     if ($matchedFiles.Count -eq 0) {
         Write-Log ("[open-sr] No matching sales report files: Label='{0}', Days='{1}'" -f `
                 $BranchLabel, ($periodDays -join ',')) -Level WARNING
@@ -1649,8 +1796,9 @@ function Initialize-Config {
                         Write-Log ("[open-sr] DATE_SUBPATH resolved: Label='{0}', Base='{1}', Path='{2}'" -f `
                                 $branch.Label, $branch.Path, $resolved) -Level DEBUG
                         [pscustomobject]@{
-                            Label = $branch.Label
-                            Path  = $resolved
+                            Label    = $branch.Label
+                            Path     = $resolved
+                            BasePath = $branch.Path
                         }
                     }
                 )
@@ -1666,12 +1814,13 @@ function Initialize-Config {
             $script:sr_paths = @(
                 foreach ($branch in $script:sr_paths) {
                     [pscustomobject]@{
-                        Label = $branch.Label
-                        Path  = Resolve-SrBranchFolderPath `
+                        Label    = $branch.Label
+                        Path     = Resolve-SrBranchFolderPath `
                             -BasePath $branch.Path `
                             -UseBranchYearMonth $true `
                             -BranchYear $script:branch_year `
                             -BranchMonth $script:branch_month
+                        BasePath = $branch.Path
                     }
                 }
             )
