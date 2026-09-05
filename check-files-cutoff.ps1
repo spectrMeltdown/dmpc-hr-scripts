@@ -1025,6 +1025,121 @@ function Open-BranchSalesReports {
             $BranchLabel, $openedCount, $matchedFiles.Count, $truncated) -Level INFO
 }
 
+function Open-BranchSalesReportFolder {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BranchLabel
+    )
+
+    Write-Log ("[open-sr-folder] Open requested: Label='{0}'" -f $BranchLabel) -Level DEBUG
+
+    if ($script:sr_paths.Count -eq 0) {
+        Write-Log "[open-sr-folder] No SR paths configured in environment" -Level WARNING
+        Show-CutoffMessageBox `
+            -Text 'No SR paths are configured. Add SR_PATHS entries to your .env file.' `
+            -Caption 'SR Folder'
+        return
+    }
+
+    $branch = Get-SrBranchGroupByLabel -BranchLabel $BranchLabel
+    if (-not $branch) {
+        Write-Log ("[open-sr-folder] No SR path mapping for branch: Label='{0}'" -f $BranchLabel) -Level WARNING
+        Show-CutoffMessageBox `
+            -Text "No SR path is configured for branch '$BranchLabel'.`nEnsure SR_PATHS uses the same label as BRANCH_PATHS." `
+            -Caption 'SR Folder'
+        return
+    }
+
+    $period = Get-CurrentPayrollPeriod
+    try {
+        $monthGroups = @(Get-PayrollPeriodMonthDayGroups -PeriodStart $period.Start -PeriodEnd $period.End)
+    }
+    catch {
+        Write-Log ("[open-sr-folder] Failed to build period month groups: Label='{0}', Period='{1:yyyy-MM-dd}' to '{2:yyyy-MM-dd}', Message='{3}'" -f `
+                $BranchLabel, $period.Start, $period.End, $_.Exception.Message) -Level ERROR
+        Show-CutoffMessageBox `
+            -Text "Could not determine payroll period folders for '$BranchLabel'.`n$($_.Exception.Message)" `
+            -Caption 'SR Folder'
+        return
+    }
+
+    if ($monthGroups.Count -eq 0) {
+        Write-Log ("[open-sr-folder] Period month groups unexpectedly empty: Label='{0}', Period='{1:yyyy-MM-dd}' to '{2:yyyy-MM-dd}'" -f `
+                $BranchLabel, $period.Start, $period.End) -Level ERROR
+        Show-CutoffMessageBox `
+            -Text "Could not determine payroll period folders for '$BranchLabel' (empty month list)." `
+            -Caption 'SR Folder'
+        return
+    }
+
+    $hasBasePaths = $branch.PSObject.Properties['BasePaths'] -and $branch.BasePaths -and @($branch.BasePaths).Count -gt 0
+    [string[]]$scanBases = if ($hasBasePaths) {
+        @($branch.BasePaths)
+    }
+    elseif ($branch.PSObject.Properties['BasePath'] -and -not [string]::IsNullOrWhiteSpace([string]$branch.BasePath)) {
+        @([string]$branch.BasePath)
+    }
+    else {
+        @()
+    }
+
+    [string[]]$fallbackPaths = if ($branch.PSObject.Properties['Paths'] -and $branch.Paths) {
+        @($branch.Paths)
+    }
+    else {
+        @($branch.Path)
+    }
+
+    $resolvePerMonth = $scanBases.Count -gt 0 -and (
+        -not [string]::IsNullOrWhiteSpace($script:date_subpath) -or $script:use_branch_year_month
+    )
+
+    [string[]]$roots = if ($resolvePerMonth) { $scanBases } else { $fallbackPaths }
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $resolvedFolders = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($root in $roots) {
+        foreach ($group in $monthGroups) {
+            $folderPath = $null
+            try {
+                if ($resolvePerMonth) {
+                    $folderPath = Resolve-SrScanFolder -BasePath $root -AnchorDate $group.AnchorDate
+                }
+                else {
+                    $folderPath = $root
+                }
+            }
+            catch {
+                Write-Log ("[open-sr-folder] Could not resolve SR folder for month: Label='{0}', Base='{1}', Anchor='{2:yyyy-MM-dd}', Message='{3}'" -f `
+                        $BranchLabel, $root, $group.AnchorDate, $_.Exception.Message) -Level DEBUG
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($folderPath) -and $seen.Add($folderPath)) {
+                $resolvedFolders.Add($folderPath)
+                Write-Log ("[open-sr-folder] Resolved SR folder: Label='{0}', Anchor='{1:yyyy-MM-dd}', Path='{2}'" -f `
+                        $BranchLabel, $group.AnchorDate, $folderPath) -Level DEBUG
+            }
+        }
+    }
+
+    if ($resolvedFolders.Count -eq 0) {
+        Write-Log ("[open-sr-folder] No SR folders resolved: Label='{0}'" -f $BranchLabel) -Level WARNING
+        Show-CutoffMessageBox `
+            -Text "No SR folder could be resolved for '$BranchLabel'." `
+            -Caption 'SR Folder'
+        return
+    }
+
+    $folderToOpen = $resolvedFolders[0]
+    Write-Log ("[open-sr-folder] Opening SR folder: Label='{0}', Path='{1}', ResolvedCount={2}" -f `
+            $BranchLabel, $folderToOpen, $resolvedFolders.Count) -Level INFO
+    Open-CutoffFolderInExplorer -FolderPath $folderToOpen -BranchLabel $BranchLabel
+}
+
 function Test-BranchHasCutoffFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -1352,7 +1467,7 @@ function Show-CutoffFilesPopup {
 
     $margin = 16
     $showSrButton = [bool]$script:show_sr_button
-    $formWidth = if ($showSrButton) { 680 } else { 520 }
+    $formWidth = if ($showSrButton) { 780 } else { 520 }
     $contentWidth = $formWidth - (2 * $margin)
     $buttonHeight = 28
     $buttonWidth = 86
@@ -1361,10 +1476,11 @@ function Show-CutoffFilesPopup {
     $rowGap = 2
     $incentivesButtonWidth = 100
     $srButtonWidth = 70
+    $srFolderButtonWidth = 90
     $openButtonHeight = 26
     $openButtonGap = 8
     $rowButtonsWidth = if ($showSrButton) {
-        $incentivesButtonWidth + $openButtonGap + $srButtonWidth
+        $incentivesButtonWidth + $openButtonGap + $srButtonWidth + $openButtonGap + $srFolderButtonWidth
     }
     else {
         $incentivesButtonWidth
@@ -1408,7 +1524,7 @@ function Show-CutoffFilesPopup {
     $listPanel.BorderStyle = 'None'
 
     $okButton = New-Object System.Windows.Forms.Button
-    $okButton.Text = 'OK'
+    $okButton.Text = 'Close'
     $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $okButton.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
     $okButton.Location = New-Object System.Drawing.Point(
@@ -1421,7 +1537,7 @@ function Show-CutoffFilesPopup {
     if ($showFinalScButton) {
         $finalScButtonWidth = 120
         $finalScButton = New-Object System.Windows.Forms.Button
-        $finalScButton.Text = 'Open Final SC'
+        $finalScButton.Text = 'Final SC'
         $finalScButton.Size = New-Object System.Drawing.Size($finalScButtonWidth, $buttonHeight)
         $finalScButton.Location = New-Object System.Drawing.Point(
             ($formWidth - $margin - $buttonWidth - $buttonGap - $finalScButtonWidth),
@@ -1503,11 +1619,28 @@ function Show-CutoffFilesPopup {
             $rowPanel.Controls.Add($incentivesButton)
 
             if ($showSrButton) {
+                $srFolderButton = New-Object System.Windows.Forms.Button
+                $srFolderButton.Text = 'SR Folder'
+                $srFolderButton.Size = New-Object System.Drawing.Size($srFolderButtonWidth, $openButtonHeight)
+                $srFolderButton.Location = New-Object System.Drawing.Point(
+                    ($rowInnerWidth - $srFolderButtonWidth),
+                    [Math]::Floor(($rowHeight - $openButtonHeight) / 2)
+                )
+                $srFolderButton.Tag = [pscustomobject]@{
+                    Label = $item.Label
+                }
+                $srFolderButton.Add_Click({
+                        param($sender, $eventArgs)
+                        $tag = $sender.Tag
+                        Write-Log ("[open-sr-folder] SR Folder clicked: Label='{0}'" -f $tag.Label) -Level DEBUG
+                        Open-BranchSalesReportFolder -BranchLabel ([string]$tag.Label)
+                    })
+
                 $srButton = New-Object System.Windows.Forms.Button
-                $srButton.Text = 'Open SR'
+                $srButton.Text = 'SR'
                 $srButton.Size = New-Object System.Drawing.Size($srButtonWidth, $openButtonHeight)
                 $srButton.Location = New-Object System.Drawing.Point(
-                    ($rowInnerWidth - $srButtonWidth),
+                    ($rowInnerWidth - $srFolderButtonWidth - $openButtonGap - $srButtonWidth),
                     [Math]::Floor(($rowHeight - $openButtonHeight) / 2)
                 )
                 $srButton.Tag = [pscustomobject]@{
@@ -1519,7 +1652,9 @@ function Show-CutoffFilesPopup {
                         Write-Log ("[open-sr] Open SR clicked: Label='{0}'" -f $tag.Label) -Level DEBUG
                         Open-BranchSalesReports -BranchLabel ([string]$tag.Label)
                     })
+
                 $rowPanel.Controls.Add($srButton)
+                $rowPanel.Controls.Add($srFolderButton)
             }
 
             $listPanel.Controls.Add($rowPanel)
