@@ -1408,7 +1408,7 @@ function Show-CutoffFilesPopup {
     $listPanel.BorderStyle = 'None'
 
     $okButton = New-Object System.Windows.Forms.Button
-    $okButton.Text = 'OK'
+    $okButton.Text = 'Close'
     $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $okButton.Size = New-Object System.Drawing.Size($buttonWidth, $buttonHeight)
     $okButton.Location = New-Object System.Drawing.Point(
@@ -1421,7 +1421,7 @@ function Show-CutoffFilesPopup {
     if ($showFinalScButton) {
         $finalScButtonWidth = 120
         $finalScButton = New-Object System.Windows.Forms.Button
-        $finalScButton.Text = 'Open Final SC'
+        $finalScButton.Text = 'Final SC'
         $finalScButton.Size = New-Object System.Drawing.Size($finalScButtonWidth, $buttonHeight)
         $finalScButton.Location = New-Object System.Drawing.Point(
             ($formWidth - $margin - $buttonWidth - $buttonGap - $finalScButtonWidth),
@@ -1504,7 +1504,7 @@ function Show-CutoffFilesPopup {
 
             if ($showSrButton) {
                 $srButton = New-Object System.Windows.Forms.Button
-                $srButton.Text = 'Open SR'
+                $srButton.Text = 'SR'
                 $srButton.Size = New-Object System.Drawing.Size($srButtonWidth, $openButtonHeight)
                 $srButton.Location = New-Object System.Drawing.Point(
                     ($rowInnerWidth - $srButtonWidth),
