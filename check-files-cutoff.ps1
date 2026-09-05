@@ -802,11 +802,14 @@ function Resolve-SrScanFolder {
     }
 
     if ($script:use_branch_year_month) {
+        $culture = [System.Globalization.CultureInfo]::InvariantCulture
+        # Match BRANCH_MONTH style (e.g. "8. August") so fallback path is a real folder name.
+        $branchMonth = '{0}. {1}' -f $AnchorDate.Month, $AnchorDate.ToString('MMMM', $culture)
         return Resolve-SrBranchFolderPath `
             -BasePath $BasePath `
             -UseBranchYearMonth $true `
             -BranchYear $AnchorDate.ToString('yyyy') `
-            -BranchMonth $AnchorDate.Month.ToString()
+            -BranchMonth $branchMonth
     }
 
     return $BasePath
@@ -1134,7 +1137,34 @@ function Open-BranchSalesReportFolder {
         return
     }
 
-    $folderToOpen = $resolvedFolders[0]
+    $folderToOpen = $null
+    foreach ($candidate in $resolvedFolders) {
+        if (Test-Path -LiteralPath $candidate -PathType Container) {
+            $folderToOpen = $candidate
+            break
+        }
+        Write-Log ("[open-sr-folder] Resolved path missing: Label='{0}', Path='{1}'" -f $BranchLabel, $candidate) -Level DEBUG
+    }
+
+    if (-not $folderToOpen) {
+        $initPath = [string]$branch.Path
+        if (-not [string]::IsNullOrWhiteSpace($initPath) -and (Test-Path -LiteralPath $initPath -PathType Container)) {
+            Write-Log ("[open-sr-folder] Falling back to init-resolved Path: Label='{0}', Path='{1}'" -f `
+                    $BranchLabel, $initPath) -Level DEBUG
+            $folderToOpen = $initPath
+        }
+    }
+
+    if (-not $folderToOpen) {
+        $attempted = ($resolvedFolders -join [Environment]::NewLine)
+        Write-Log ("[open-sr-folder] No existing SR folder found: Label='{0}', Attempted='{1}'" -f `
+                $BranchLabel, ($resolvedFolders -join '; ')) -Level WARNING
+        Show-CutoffMessageBox `
+            -Text "No SR folder found for '$BranchLabel'.`n`nTried:`n$attempted" `
+            -Caption 'SR Folder'
+        return
+    }
+
     Write-Log ("[open-sr-folder] Opening SR folder: Label='{0}', Path='{1}', ResolvedCount={2}" -f `
             $BranchLabel, $folderToOpen, $resolvedFolders.Count) -Level INFO
     Open-CutoffFolderInExplorer -FolderPath $folderToOpen -BranchLabel $BranchLabel
